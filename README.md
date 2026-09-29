@@ -124,12 +124,6 @@ Anything Forever adds is caught by **auto-detect** if the game shows its own pro
 
 ---
 
-## Icon
-
-`ProcDoc_Icon.png` (512x512) is ProcDoc's icon for the CurseForge project page. In game, `ProcDoc_Icon.tga` shows in the AddOns list, on the minimap button and in the options header. Both are made by `tools/make_icon.py`.
-
----
-
 ## License
 
 Feel free to use, modify, or share **ProcDoc**. A mention or credit is welcome but not required. Enjoy your new proccing visuals!
