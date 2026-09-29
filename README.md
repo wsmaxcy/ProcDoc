@@ -1,8 +1,29 @@
-# ProcDoc
+<p align="center">
+  <img src="ProcDoc_Icon.png" alt="ProcDoc" width="160">
+</p>
+
+<h1 align="center">ProcDoc</h1>
+
+<p align="center"><b>Never miss a proc again.</b> Big, pulsing proc alerts for World of Warcraft: Forever.</p>
+
+---
 
 **ProcDoc** is a lightweight addon for **World of Warcraft: Forever**. It shows big pulsing visuals the moment you get a proc worth reacting to (Clearcasting, Shadow Trance, Overpower, Riposte and so on), so you never miss one.
 
 It works out of the box: install it and procs light up. When you want to, every alert can be arranged and styled right on screen with the mouse.
+
+## Screenshots
+
+<p align="center">
+  <img src="Procs.png" alt="Warrior alerts in combat: Overpower above, Enrage on both sides, Revenge on the right" width="60%">
+</p>
+<p align="center"><i>Alerts in combat, each with its own countdown.</i></p>
+
+<p align="center">
+  <img src="ProcDoc.png" alt="The options window beside a pair of Rogue alerts" width="49%">
+  <img src="Options.png" alt="A proc's settings: position, snap buttons, rotation and size" width="31%">
+</p>
+<p align="center"><i>The options window sits beside your alerts. Every proc can be placed, sized and styled.</i></p>
 
 ---
 
@@ -11,7 +32,7 @@ It works out of the box: install it and procs light up. When you want to, every 
 1. **Visual alerts for procs**: pulsing images around your character whenever a proc is active, with a sound and a countdown. Each alert **pops in** with a bright flash the moment the proc happens, and quickly **shrinks away** when the proc is used or runs out.
 2. **Drag-and-drop layout**: with the options open, drag any alert to where you want it. **Shift + mouse wheel** over an alert resizes it. Each alert can also be shown on **both sides** of the screen as a mirrored pair.
 3. **Customisable countdowns**: drag the number to any spot on its alert, and Shift + wheel over it to resize it. Choose the font, outline, colors, when it turns "running out", and whether to show tenths.
-4. **Your own procs**: track any buff by name or spell ID, or pick one you have right now. Anything the game flags with its own proc glow is also picked up automatically.
+4. **Your own procs**: track any buff by name or spell ID, or pick one you have right now (in combat, pick from the buffs you had earlier). Anything the game flags with its own proc glow is also picked up automatically.
 5. **Reaction abilities without action bars**: Overpower, Revenge, Riposte, Counterattack and Mongoose Bite light up when they become usable.
 6. **Clears when used**: alerts go away as soon as the proc is spent, even in combat, where Forever hides buff details from addons.
 
@@ -19,8 +40,11 @@ It works out of the box: install it and procs light up. When you want to, every 
 
 ## Installation
 
-1. Download or clone this repository.
-2. Copy the `ProcDoc` folder into `World of Warcraft\_classic_beta_\Interface\AddOns\ProcDoc\`.
+**CurseForge app (easiest):** search for **ProcDoc** and click Install. Updates arrive automatically.
+
+**Manually:**
+1. Download the latest release zip from CurseForge.
+2. Unzip it so the addon sits at `World of Warcraft\_classic_beta_\Interface\AddOns\ProcDoc\`.
 3. Restart the game (or `/reload` if it's already running).
 4. Make sure **ProcDoc** is enabled in the AddOns list at character select.
 
@@ -121,6 +145,8 @@ ProcDoc only alerts on **reaction** procs, meaning something just happened that 
 | Priest / Paladin | None built in. Use auto-detect or **Add a proc** |
 
 Anything Forever adds is caught by **auto-detect** if the game shows its own proc glow for it. Anything else can be added with **Add a proc**.
+
+**About combat:** Forever hides your buffs from addons while you're in combat. ProcDoc still catches the procs it can see coming: **Remorseless Attacks** lights up on your killing blow (an enemy dying at the same moment the buff lands on you, so a party member's kill doesn't set it off), **Enrage** when you take a critical hit, and the reaction abilities when you dodge, parry or block. Other buff procs that start mid-fight appear as soon as combat ends, and any proc that was already up before the fight stays up until it's used or runs out.
 
 ---
 

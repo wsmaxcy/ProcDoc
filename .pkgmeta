@@ -1,0 +1,10 @@
+package-as: ProcDoc
+
+# Only the addon goes in the download; these are for the project pages and
+# for making art.
+ignore:
+  - tools
+  - Options.png
+  - ProcDoc.png
+  - Procs.png
+  - ProcDoc_Icon.png

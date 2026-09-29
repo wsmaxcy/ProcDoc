@@ -2,7 +2,7 @@
 ## Title: ProcDoc
 ## Notes: Doctor up your proc alerts with pulsing images to make sure you never miss a proc. Built for World of Warcraft: Forever.
 ## Author: Clempton, Clumpton, Fruiter, Poot
-## Version: 4.1.0
+## Version: @project-version@
 ## SavedVariables: ProcDocDB
 ## IconTexture: Interface\AddOns\ProcDoc\ProcDoc_Icon
 ## AddonCompartmentFunc: ProcDoc_OnAddonCompartmentClick

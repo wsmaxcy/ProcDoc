@@ -60,6 +60,7 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.custom              = ProcDocDB.custom or {}                -- [class][procKey] = { name, spellID }
     ProcDocDB.learned             = ProcDocDB.learned or {}               -- [class][procKey] = { [spellID] = true }
     ProcDocDB.stackMax            = ProcDocDB.stackMax or {}              -- [class][procKey] = highest stacks seen
+    ProcDocDB.seen                = ProcDocDB.seen or {}                  -- [class][procKey] = true once the buff was read
 end
 
 local function ProcDoc_LoadGlobalsFromDB()
@@ -180,7 +181,11 @@ local function SafeRegister(frame, event, unit)
 end
 
 local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or _G.GetAddOnMetadata
-local VERSION = (GetMeta and SafeCall(GetMeta, "ProcDoc", "Version")) or "4.1.0"
+-- The release packager replaces @project-version@ in the TOC with the tag
+-- (e.g. "v4.2.0"); a copy that wasn't packaged shows as "dev".
+local VERSION = (GetMeta and SafeCall(GetMeta, "ProcDoc", "Version")) or "dev"
+if type(VERSION) ~= "string" or VERSION:find("@", 1, true) then VERSION = "dev" end
+VERSION = (VERSION:gsub("^[vV]", ""))
 
 local function GetSpellNameCompat(spell)
     if not Readable(spell) then return nil end
@@ -311,6 +316,15 @@ end
 --                 actions) opens the window instead, and `cooldown` (seconds)
 --                 stops false alerts right after a cast.
 --
+-- Forever hides the whole buff list from addons in combat (and gives addons
+-- no combat log), so a buff proc that starts mid-fight can't be seen until
+-- combat ends. Procs with a trigger the client does show in combat set
+-- `predictOn` ("KILL": your killing blow on a non-trivial enemy;
+-- "CRIT_TAKEN": you were crit) and `predictDuration`; they light up at the
+-- trigger if the player
+-- has the talent (`talent` name / `talentIDs`), and the first readable scan
+-- after combat confirms or clears them.
+--
 -- These are the talent/ability reaction procs built into ProcDoc for WoW
 -- Forever. Anything else Forever flags with a proc glow is caught at
 -- runtime by "Auto-detect" (Blizzard's proc overlay events), and players can
@@ -387,6 +401,10 @@ local PROC_DATA = {
             texture          = "Interface\\Icons\\Spell_Shadow_UnholyFrenzy",
             alertTexturePath = IMG .. "BloodOrbs.tga",
             alertStyle       = "SIDES",
+            talent           = "Enrage",
+            talentIDs        = { 12317, 13045, 13046, 13047, 13048 },
+            predictOn        = "CRIT_TAKEN",     -- every crit you take enrages you
+            predictDuration  = 12,
         },
     },
     ["PRIEST"] = {
@@ -402,7 +420,11 @@ local PROC_DATA = {
             texture          = "Interface\\Icons\\Ability_FeignDeath",
             alertTexturePath = IMG .. "SmallRedSlash.tga",
             alertStyle       = "SIDES",
-            consumedBy       = { "Sinister Strike", "Backstab", "Hemorrhage", "Eviscerate", "Ambush" },
+            consumedBy       = { "Sinister Strike", "Backstab", "Hemorrhage", "Ambush", "Riposte", "Ghostly Strike" },
+            talent           = "Remorseless Attacks",
+            talentIDs        = { 14144, 14148 },
+            predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
+            predictDuration  = 20,
         },
     },
 }
@@ -1545,23 +1567,39 @@ local function AddCustomProc(input)
     return proc
 end
 
--- Untracked buffs the player has right now, for the "Add a proc" picker
+-- Every buff read this session (name -> { id, t }), filled by CheckProcs.
+-- The game hides buffs in combat, so the "Add a proc" picker and
+-- /procdoc buffs fall back to these then.
+local recentBuffs = {}
+
+-- Untracked buffs the player has right now (or had recently, while the game
+-- is hiding them), for the "Add a proc" picker
 local function CurrentBuffOptions()
     local out, seen, locked = {}, {}, 0
+    local function Offer(name, id, note)
+        if seen[name] then return end
+        seen[name] = true
+        if (id and buffBySpellID[id]) or buffByName[name] then return end
+        out[#out + 1] = { value = id or name,
+            label = name .. (id and ("  |cff777777" .. id .. "|r") or "") .. (note or "") }
+    end
     for i = 1, 40 do
         local exists, name, _, _, _, _, spellId = GetPlayerBuff(i)
         if not exists and name ~= true then break end
         if not exists or not Readable(name) then locked = locked + 1 end
-        if exists and Readable(name) and not seen[name] then
-            seen[name] = true
-            local id = Readable(spellId) and spellId or nil
-            if not ((id and buffBySpellID[id]) or buffByName[name]) then
-                out[#out + 1] = { value = id or name, label = name .. (id and ("  |cff777777" .. id .. "|r") or "") }
-            end
+        if exists and Readable(name) then Offer(name, Readable(spellId) and spellId or nil) end
+    end
+    if locked > 0 then
+        local names = {}
+        for name in pairs(recentBuffs) do names[#names + 1] = name end
+        table.sort(names, function(x, y) return recentBuffs[x].t > recentBuffs[y].t end)
+        for i = 1, math.min(#names, 25) do
+            Offer(names[i], recentBuffs[names[i]].id, "  |cff777777(seen earlier)|r")
         end
     end
     if #out == 0 then
-        out[1] = { value = "none", label = locked > 0 and "Buffs are locked right now (combat)" or "No untracked buffs right now" }
+        out[1] = { value = "none", label = locked > 0 and "Buffs are hidden in combat: type a name or ID"
+            or "No untracked buffs right now" }
     end
     return out
 end
@@ -1694,6 +1732,19 @@ local function LearnProcID(proc, id)
     Trace("learned spell ID %d for %s", id, proc.key)
 end
 
+-- The buff was really read: the player can get this proc (used when the
+-- talent APIs can't answer; see Predict.HasTalent). Predicted-proc helpers
+-- live in one table to spare main-chunk locals (Lua 5.1 allows 200).
+local Predict = {}
+function Predict.MarkSeen(proc)
+    proc.hasTalent = true
+    if proc.everSeen then return end
+    proc.everSeen = true
+    local byClass = ProcDocDB.seen[playerClass] or {}
+    ProcDocDB.seen[playerClass] = byClass
+    byClass[proc.key] = true
+end
+
 -- A proc that wasn't among the readable buffs while some buffs were locked:
 -- ask for it directly (spell IDs, learned IDs, then its name). A found buff
 -- or an allowed "not there" answer is authoritative; otherwise keep what we
@@ -1719,6 +1770,7 @@ local function CheckHiddenProc(proc, now)
     if aura then
         if alert then alert.pendingConsume = nil end
         local wasLive = alert and alert.live
+        Predict.MarkSeen(proc)
         SetLive(proc, "aura", MakeAuraInfo(proc, aura.applications, aura.duration,
             aura.expirationTime, aura.auraInstanceID, now))
         if not wasLive then Trace("%s found by direct lookup while buffs are locked", proc.key) end
@@ -1769,6 +1821,7 @@ CheckProcs = function()
     local found = {}
     local seenInstances = {}
     local hidden, readable = 0, 0
+    local other = {}   -- readable buffs that matched no proc (trace only)
     for i = 1, 40 do
         local exists, name, icon, count, duration, expirationTime, spellId, instanceID = GetPlayerBuff(i)
         if not exists then
@@ -1778,10 +1831,21 @@ CheckProcs = function()
             hidden = hidden + 1
         else
             readable = readable + 1
+            if Readable(name) then
+                local r = recentBuffs[name]
+                if not r then r = {}; recentBuffs[name] = r end
+                if Readable(spellId) then r.id = spellId end
+                r.t = now
+            end
             local proc
             if Readable(spellId) then proc = buffBySpellID[spellId] end
             if not proc and Readable(name) then proc = buffByName[name] end
+            if not proc and G.trace then
+                other[#other + 1] = string.format("%s#%s", Readable(name) and tostring(name) or "?",
+                    Readable(spellId) and tostring(spellId) or "?")
+            end
             if proc and not found[proc.key] then
+                Predict.MarkSeen(proc)
                 local info = MakeAuraInfo(proc, count, duration, expirationTime, instanceID, now)
                 if info then
                     found[proc.key] = info
@@ -1792,7 +1856,8 @@ CheckProcs = function()
             end
         end
     end
-    auraLocked = hidden > 0
+    -- an empty list isn't proof of anything while the game says buffs are secret
+    auraLocked = hidden > 0 or (readable == 0 and AurasRestricted())
     if not auraLocked then
         for id in pairs(procByInstance) do
             if not seenInstances[id] then procByInstance[id] = nil end
@@ -1814,8 +1879,9 @@ CheckProcs = function()
     if G.trace then
         local names = {}
         for key in pairs(found) do names[#names + 1] = key end
-        Trace("buff scan: %d readable, %d locked%s", readable, hidden,
-            #names > 0 and (" - found " .. table.concat(names, ", ")) or "")
+        Trace("buff scan: %d readable, %d locked%s%s", readable, hidden,
+            #names > 0 and (" - found " .. table.concat(names, ", ")) or "",
+            #other > 0 and (" - other buffs: " .. table.concat(other, ", ")) or "")
     end
 end
 
@@ -1845,6 +1911,7 @@ local function HandleAuraUpdate(updateInfo)
                 local proc = (Readable(aura.spellId) and buffBySpellID[aura.spellId])
                     or (Readable(aura.name) and buffByName[aura.name])
                 if proc then
+                    Predict.MarkSeen(proc)
                     local info = MakeAuraInfo(proc, aura.applications, aura.duration,
                         aura.expirationTime, aura.auraInstanceID, now)
                     if info then SetLive(proc, "aura", info) end
@@ -1908,6 +1975,143 @@ local function ConsumeBuffProcs(castName)
     end
     if pending then ResolvePendingConsumes(false) end
     return pending
+end
+
+-- Predicted procs (`predictOn` in section 3). Forever hides every buff in
+-- combat, so a proc whose trigger the client does show lights up at that
+-- trigger for its known duration. Spending casts still clear it, and the
+-- first readable scan after combat confirms it or clears it.
+function Predict.HasTalent(proc)
+    if proc.hasTalent ~= nil then return proc.hasTalent end
+    local answer
+    if proc.talentIDs and IsPlayerSpell then
+        for _, id in ipairs(proc.talentIDs) do
+            local ok, known = pcall(IsPlayerSpell, id)
+            if ok and Readable(known) and known then answer = true break end
+        end
+    end
+    if answer == nil and proc.talent and GetNumTalentTabs and GetNumTalents and GetTalentInfo then
+        local okT, tabs = pcall(GetNumTalentTabs)
+        tabs = okT and Readable(tabs) and tonumber(tabs) or 0
+        for t = 1, tabs do
+            local okN, n = pcall(GetNumTalents, t)
+            n = okN and Readable(n) and tonumber(n) or 0
+            for i = 1, n do
+                local ok, name, _, _, _, rank = pcall(GetTalentInfo, t, i)
+                if ok and Readable(name) and name == proc.talent then
+                    answer = Readable(rank) and type(rank) == "number" and rank > 0
+                    break
+                end
+            end
+            if answer ~= nil then break end
+        end
+    end
+    if answer == nil then
+        -- neither API could tell: trust having read the buff before
+        local seen = ProcDocDB.seen[playerClass]
+        answer = (seen and seen[proc.key]) and true or false
+    end
+    proc.hasTalent = answer
+    Trace("%s talent check: %s", proc.key, answer and "yes" or "no")
+    return answer
+end
+
+function Predict.ResetTalents()
+    for _, proc in ipairs(buffProcs) do proc.hasTalent = nil end
+end
+
+function Predict.Run(trigger, why)
+    local list
+    for _, proc in ipairs(buffProcs) do
+        if proc.predictOn == trigger and IsProcEnabled(proc) and Predict.HasTalent(proc) then
+            list = list or {}
+            list[#list + 1] = proc
+        end
+    end
+    if not list then return end
+    CheckProcs()                       -- buffs readable: that scan is the truth
+    if not auraLocked then return end
+    local now = GetTime()
+    for _, proc in ipairs(list) do
+        local dur = proc.predictDuration or 10
+        SetLive(proc, "aura", { exp = now + dur, dur = dur, charges = proc.charges or 1, predicted = true })
+        local a = alerts[proc.key]
+        -- the killing blow's own cast can land just after the reward
+        a.pendingConsume, a.liveSince = nil, now
+        Trace("%s predicted from %s (buffs are hidden)", proc.key, why)
+    end
+end
+
+-- "KILL" procs come from YOUR killing blow on an enemy that isn't trivial.
+-- Addons get no combat log on Forever, so a killing blow is recognised as
+-- two things landing together: an enemy dying (your target, a nameplate, or
+-- an XP/honor reward) and a buff change on you (UNIT_AURA; which buff is
+-- hidden in combat). A death with no buff change was someone else's kill or
+-- a trivial enemy; a buff change with no death is just some other buff.
+local kill = { WINDOW = 0.5, death = -1000, aura = -2000, fired = -1000, targetDead = true }
+
+function kill.Try()
+    if math.abs(kill.death - kill.aura) > kill.WINDOW then return end
+    local why = kill.why
+    kill.death, kill.aura, kill.fired = -1000, -2000, GetTime()
+    Predict.Run("KILL", "your killing blow (" .. why .. " + a buff arrived)")
+end
+
+function kill.NoteDeath(why)
+    local now = GetTime()
+    if now - kill.fired < 1 then return end   -- more signals from the same kill
+    kill.death, kill.why = now, why
+    Trace("enemy died (%s)", why)
+    kill.Try()
+end
+
+function kill.NoteAura()
+    kill.aura = GetTime()
+    kill.Try()
+end
+
+function kill.ReadXP()
+    local xp = UnitXP and SafeCall(UnitXP, "player")
+    if Readable(xp) and type(xp) == "number" then return xp end
+end
+
+-- Readable yes/no from a unit query, or nil when the game hides it
+function kill.UnitFlag(fn, ...)
+    if not fn then return nil end
+    local v = SafeCall(fn, ...)
+    if Readable(v) then return v and true or false end
+end
+
+function kill.IsDeadEnemy(unit)
+    if kill.UnitFlag(UnitIsDead, unit) ~= true then return false end
+    return kill.UnitFlag(UnitIsFriend, "player", unit) == false
+end
+
+-- XP and honor rewards only say an enemy died; they happen in groups
+-- too when a party member lands the blow
+function kill.OnEvent(event, unit)
+    if event == "PLAYER_XP_UPDATE" then
+        local xp = kill.ReadXP()
+        local changed = xp and kill.xp and xp ~= kill.xp
+        kill.xp = xp or kill.xp
+        if changed then kill.NoteDeath("XP") end
+    elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
+        kill.NoteDeath("XP")
+    elseif event == "CHAT_MSG_COMBAT_HONOR_GAIN" then
+        kill.NoteDeath("honor")
+    elseif event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_ENTERING_WORLD" then
+        -- a corpse you click on isn't a fresh death (hidden counts as dead)
+        kill.targetDead = kill.UnitFlag(UnitIsDead, "target") ~= false
+        if event == "PLAYER_ENTERING_WORLD" then kill.xp = kill.ReadXP() end
+    elseif event == "UNIT_HEALTH" or event == "UNIT_FLAGS" then
+        if not (Readable(unit) and unit == "target") then return end
+        local dead = kill.UnitFlag(UnitIsDead, "target")
+        if dead == nil then return end
+        if dead and not kill.targetDead and kill.IsDeadEnemy("target") then kill.NoteDeath("your target") end
+        kill.targetDead = dead
+    elseif event == "NAME_PLATE_UNIT_REMOVED" then
+        if Readable(unit) and type(unit) == "string" and kill.IsDeadEnemy(unit) then kill.NoteDeath("a nameplate") end
+    end
 end
 
 -- 8) Action-based detection (reaction abilities)
@@ -2074,7 +2278,8 @@ local function OnOverlayShow(spellID, art, location)
 end
 
 local function OnOverlayHide(spellID)
-    Trace("Blizzard proc overlay HIDE %s", SV(spellID))
+    -- the client fires HIDE with no spell constantly; only log real ones
+    if issecret(spellID) or spellID ~= nil then Trace("Blizzard proc overlay HIDE %s", SV(spellID)) end
     if issecret(spellID) then return end
     if spellID == nil then
         for _, proc in ipairs(buffProcs) do SetLive(proc, "overlay", nil) end
@@ -2139,6 +2344,7 @@ for _, ev in ipairs({
     "PLAYER_TARGET_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
     "SPELL_ACTIVATION_OVERLAY_SHOW", "SPELL_ACTIVATION_OVERLAY_HIDE",
     "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW", "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",
+    "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE",   -- talent checks (predicted procs)
 }) do
     SafeRegister(actionFrame, ev)
 end
@@ -2157,6 +2363,7 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
                 proc.localName = (proc.spellID and GetSpellNameCompat(proc.spellID)) or proc.spellName
                 if proc.localName then actionByName[proc.localName] = proc end
             end
+            Predict.ResetTalents()
         end
         RebuildActionSlots()
         CheckAllActionProcs()
@@ -2202,8 +2409,13 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
                     Trace("%s %s -> %s window open", arg1, flag and on[flag] and flag or arg2, proc.key)
                 end
             end
+            if arg1 == "player" and arg2 == "WOUND" and flag == "CRITICAL" then
+                Predict.Run("CRIT_TAKEN", "a crit you took")
+            end
             CheckAllActionProcs()
         end
+    elseif event == "CHARACTER_POINTS_CHANGED" or event == "PLAYER_TALENT_UPDATE" then
+        Predict.ResetTalents()
     elseif event == "PLAYER_REGEN_DISABLED" then
         Trace("entered combat")
         CheckAllActionProcs()
@@ -2219,7 +2431,34 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
     end
 end))
 
+-- Enemy deaths, for killing-blow procs (section 7)
+do
+local killFrame = CreateFrame("Frame", "ProcDocKillFrame", UIParent)
+for _, ev in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_TARGET_CHANGED", "PLAYER_XP_UPDATE",
+    "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_COMBAT_HONOR_GAIN", "NAME_PLATE_UNIT_REMOVED" }) do
+    SafeRegister(killFrame, ev)
+end
+SafeRegister(killFrame, "UNIT_HEALTH", "target")
+SafeRegister(killFrame, "UNIT_FLAGS", "target")
+killFrame:SetScript("OnEvent", GuardedHandler(function(self, event, unit)
+    if initialized then kill.OnEvent(event, unit) end
+end))
+end
+
 -- 10) Aura change event (buff-based proc refresh)
+--    While buffs are hidden the payload can't say which buff changed, but a
+--    change that isn't purely a removal still marks "a buff arrived" for
+--    killing-blow procs.
+function kill.AuraChangeKind(updateInfo)
+    if type(updateInfo) ~= "table" then return "hidden" end
+    local full, added, updated = updateInfo.isFullUpdate, updateInfo.addedAuras, updateInfo.updatedAuraInstanceIDs
+    if issecret(full) or issecret(added) or issecret(updated) then return "hidden" end
+    if full == true then return "full" end
+    if type(added) == "table" and #added > 0 then return "added" end
+    if type(updated) == "table" and #updated > 0 then return "updated" end
+    return nil                                    -- removals only
+end
+
 local auraFrame = CreateFrame("Frame", "ProcDocAuraFrame", UIParent)
 SafeRegister(auraFrame, "UNIT_AURA", "player")
 auraFrame:SetScript("OnEvent", GuardedHandler(function(self, event, unit, updateInfo)
@@ -2232,6 +2471,11 @@ auraFrame:SetScript("OnEvent", GuardedHandler(function(self, event, unit, update
         end
     end
     CheckProcs()
+    local kind = kill.AuraChangeKind(updateInfo)
+    if kind and auraLocked then
+        Trace("buff change while hidden (%s)", kind)
+        kill.NoteAura()
+    end
 end))
 
 -- 11) Test proc + unlock (arrange) mode
@@ -3898,7 +4142,7 @@ local function BuildOptionsFrame()
     local title = FS(header, "GameFontNormalLarge", "ProcDoc")
     title:SetPoint("TOPLEFT", logo, "TOPRIGHT", 8, 0)
     local sub = FS(header, "GameFontHighlightSmall",
-        "|c" .. classColor .. (UnitClass("player") or "") .. "|r  |cff777777v" .. VERSION ..
+        "|c" .. classColor .. (UnitClass("player") or "") .. "|r  |cff777777" .. (VERSION == "dev" and "dev build" or ("v" .. VERSION)) ..
         (IS_FOREVER and " · Forever" or "") .. "|r")
     sub:SetPoint("BOTTOMLEFT", logo, "BOTTOMRIGHT", 8, 0)
     local ok, close = pcall(CreateFrame, "Button", nil, header, "UIPanelCloseButton")
@@ -4019,7 +4263,19 @@ local function PrintBuffs()
             DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s - %s - %s%s", n, id, c, proc and "  |cff00ff96(tracked)|r" or ""))
         end
     end
-    if locked > 0 then Print(locked .. " buff(s) are locked by the game right now (usually in combat).") end
+    if locked > 0 then
+        Print(locked .. " buff(s) are hidden by the game right now (it does this in combat).")
+        local names = {}
+        for name in pairs(recentBuffs) do names[#names + 1] = name end
+        if #names > 0 then
+            table.sort(names, function(x, y) return recentBuffs[x].t > recentBuffs[y].t end)
+            Print("buffs seen earlier this session:")
+            for i = 1, math.min(#names, 15) do
+                local id = recentBuffs[names[i]].id
+                DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s - %s", names[i], id and tostring(id) or "?"))
+            end
+        end
+    end
 end
 
 SLASH_PROCDOC1 = "/procdoc"
