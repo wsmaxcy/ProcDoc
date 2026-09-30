@@ -61,6 +61,7 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.learned             = ProcDocDB.learned or {}               -- [class][procKey] = { [spellID] = true }
     ProcDocDB.stackMax            = ProcDocDB.stackMax or {}              -- [class][procKey] = highest stacks seen
     ProcDocDB.seen                = ProcDocDB.seen or {}                  -- [class][procKey] = true once the buff was read
+    ProcDocDB.cdmTips             = ProcDocDB.cdmTips or {}               -- [class][procKey] = true once the Cooldown Manager tip was shown
 end
 
 local function ProcDoc_LoadGlobalsFromDB()
@@ -338,6 +339,8 @@ local PROC_DATA = {
             alertTexturePath = IMG .. "FelOoze.tga",
             alertStyle       = "SIDES",
             consumedBy       = { "Shadow Bolt" },
+            talent           = "Nightfall",
+            talentIDs        = { 18094, 18095 }, -- the Cooldown Manager may list the talent
         },
     },
     ["MAGE"] = {
@@ -641,6 +644,32 @@ local function IsProcEnabled(proc)
     return PS(proc.key).enabled ~= false
 end
 
+-- Reminders: a buff set to "remind me when it's missing" (per-proc setting
+-- remind = "missing") shows its alert while the buff is NOT there, in and out
+-- of combat alike. Detection is unchanged: sources still mean "the buff is
+-- there", only the alert flips. Grouped in one table to spare main-chunk locals.
+local Remind = { quietUntil = math.huge }
+
+function Remind.Is(proc)
+    return not proc.isAction and PS(proc.key).remind == "missing"
+end
+
+-- Not while dead or a ghost, and not in the first seconds after zoning
+function Remind.ConditionOK()
+    if GetTime() < Remind.quietUntil then return false end
+    local dead = SafeCall(UnitIsDeadOrGhost, "player")
+    return not (Readable(dead) and dead)
+end
+
+-- Whether an alert should be up: normally while any source says the proc is
+-- on; for a reminder, while nothing says the buff is there
+function Remind.WantLive(a)
+    if not IsProcEnabled(a.proc) then return false end
+    local any = next(a.sources) ~= nil
+    if not Remind.Is(a.proc) then return any end
+    return (not any) and Remind.ConditionOK()
+end
+
 local function ProcIcon(proc)
     local icon
     if proc.spellID then icon = GetSpellIconCompat(proc.spellID) end
@@ -803,7 +832,7 @@ end
 local Pips = { TEX = "Interface\\AddOns\\ProcDoc\\ProcDoc_Pip" }   -- tools/make_icon.py
 
 function Pips.Enabled(proc)
-    return not proc.isAction and PS(proc.key).stackDots ~= false
+    return not proc.isAction and not Remind.Is(proc) and PS(proc.key).stackDots ~= false
 end
 
 -- Dot size: per-proc if set, else scales with the alert like the countdown
@@ -1212,39 +1241,47 @@ local function ProcDoc_PlayAlertSound(proc)
     PlaySoundKey(key)
 end
 
--- Marks a detection source ("aura", "overlay", "action") on/off for a proc.
--- `info` may carry exp (absolute expiration time) and dur for the countdown.
+-- Recomputes whether an alert is up; going up pops it and plays its sound
+function Remind.UpdateLive(a, why)
+    local live = Remind.WantLive(a)
+    if live and not a.live then
+        a.phase = 0
+        a.liveSince = GetTime()
+        a.popStart = a.liveSince
+        ProcDoc_PlayAlertSound(a.proc)
+    end
+    if live ~= a.live then
+        a.live = live
+        Trace("%s %s (via %s%s)", live and "SHOW" or "HIDE", a.proc.key, why,
+            Remind.Is(a.proc) and ", reminder" or "")
+        RefreshAlert(a)
+    end
+end
+
+-- Marks a detection source ("aura", "overlay", "action", "cdm", "sim") on/off
+-- for a proc. `info` may carry exp (absolute expiration time) and dur for the
+-- countdown.
 local function SetLive(proc, source, info)
     local a = GetAlert(proc)
     a.sources[source] = info or nil
     if info and info.exp then
         a.expiration, a.duration = info.exp, info.dur
     end
-    local any = next(a.sources) ~= nil
-    if not any then a.expiration, a.duration = nil, nil end
-    local live = any and IsProcEnabled(proc)
-    if live and not a.live then
-        a.phase = 0
-        a.liveSince = GetTime()
-        a.popStart = a.liveSince
-        ProcDoc_PlayAlertSound(proc)
-    end
-    if live ~= a.live then
-        a.live = live
-        Trace("%s %s (via %s)", live and "SHOW" or "HIDE", proc.key, source)
-        RefreshAlert(a)
-    end
+    if next(a.sources) == nil then a.expiration, a.duration = nil, nil end
+    Remind.UpdateLive(a, source)
 end
 
 -- Re-evaluates enabled state for every alert (after toggles in the options)
 local function ReevaluateAll()
     for _, a in pairs(alerts) do
-        a.live = (next(a.sources) ~= nil) and IsProcEnabled(a.proc)
+        a.live = Remind.WantLive(a)
         RefreshAlert(a)
     end
+    if Remind.RefreshAll then Remind.RefreshAll() end
 end
 
 local function TimerEnabled(proc)
+    if Remind.Is(proc) then return false end     -- nothing to count down
     local t = PS(proc.key).timer
     if t == "on" then return true end
     if t == "off" then return false end
@@ -1314,6 +1351,12 @@ local function OnUpdateHandler(self, elapsed)
     local popPeak = 1 + 0.15 * (G.popStrength or 1.7)   -- 1.7 -> ~25% overshoot
 
     for _, a in pairs(alerts) do
+        -- Buff expired while aura data was locked (no scan to notice it).
+        -- Checked for every alert: a reminder is hidden while its buff is up.
+        local aura = a.sources.aura
+        if aura and aura.exp and now >= aura.exp then
+            SetLive(a.proc, "aura", nil)
+        end
         if a.exitStart then
             AnimateExit(a, now)
         elseif a.shown then
@@ -1429,11 +1472,6 @@ local function OnUpdateHandler(self, elapsed)
             end
             if a.live and a.sources.action and a.expiration and now >= a.expiration then
                 ExpireActionProc(a.proc)
-            end
-            -- Buff expired while aura data was locked (no scan to notice it)
-            local aura = a.sources.aura
-            if aura and aura.exp and now >= aura.exp then
-                SetLive(a.proc, "aura", nil)
             end
         end
     end
@@ -1795,7 +1833,10 @@ local function CheckHiddenProc(proc, now)
             ClearAuraSource(proc)
         elseif present then
             alert.pendingConsume = nil
-        elseif not (cur.inst and removalReadable) and not (cur.exp and cur.exp > now) then
+        elseif not (cur.inst and removalReadable) and not (cur.exp and cur.exp > now)
+            and not Remind.Is(proc) then
+            -- (a reminder's buff counts as there until its known expiry, or
+            -- for good if it has none, so no false "missing" mid-fight)
             SetLive(proc, "aura", nil)
         end
     end
@@ -1977,6 +2018,26 @@ local function ConsumeBuffProcs(castName)
     return pending
 end
 
+-- Reminders: re-check every one (combat, death and zoning change whether
+-- they should show). Also updates alerts switched back to normal procs.
+function Remind.RefreshAll()
+    for _, proc in ipairs(buffProcs) do
+        if Remind.Is(proc) or alerts[proc.key] then
+            Remind.UpdateLive(GetAlert(proc), "reminder check")
+        end
+    end
+end
+
+-- Your own recast of a reminder buff while buffs are hidden: count it as
+-- back for as long as it lasted last time (the scan after combat corrects it)
+function Remind.OnCast(castName)
+    local proc = castName and buffByName[castName]
+    if not (proc and auraLocked and Remind.Is(proc)) then return end
+    local dur = proc.lastDuration or 600
+    SetLive(proc, "aura", { exp = GetTime() + dur, dur = dur })
+    Trace("%s recast while buffs are hidden: counted as back for %ds", proc.key, dur)
+end
+
 -- Predicted procs (`predictOn` in section 3). Forever hides every buff in
 -- combat, so a proc whose trigger the client does show lights up at that
 -- trigger for its known duration. Spending casts still clear it, and the
@@ -2087,6 +2148,32 @@ function kill.IsDeadEnemy(unit)
     return kill.UnitFlag(UnitIsFriend, "player", unit) == false
 end
 
+-- Highest enemy level that's grey to a player of this level (the classic
+-- rule; at 60 it's 9 levels below you). Grey kills never proc these.
+function kill.GrayLevel(level)
+    if level <= 5 then return 0 end
+    if level <= 39 then return level - 5 - math.floor(level / 10) end
+    if level <= 59 then return level - 1 - math.floor(level / 5) end
+    return level - 9
+end
+
+function kill.IsGrey(unit)
+    local trivial = kill.UnitFlag(UnitIsTrivial, unit)
+    if trivial ~= nil then return trivial end
+    local mob, me = SafeCall(UnitLevel, unit), SafeCall(UnitLevel, "player")
+    if not (Readable(mob) and Readable(me)) or type(mob) ~= "number" or type(me) ~= "number" then return false end
+    return mob >= 1 and mob <= kill.GrayLevel(me)      -- -1 = "??", never grey
+end
+
+-- Your target or a nameplate enemy just died: grey ones don't count
+function kill.UnitDied(unit, why)
+    if kill.IsGrey(unit) then
+        Trace("enemy died (%s) but it was grey: no killing-blow proc", why)
+        return
+    end
+    kill.NoteDeath(why)
+end
+
 -- XP and honor rewards only say an enemy died; they happen in groups
 -- too when a party member lands the blow
 function kill.OnEvent(event, unit)
@@ -2107,10 +2194,10 @@ function kill.OnEvent(event, unit)
         if not (Readable(unit) and unit == "target") then return end
         local dead = kill.UnitFlag(UnitIsDead, "target")
         if dead == nil then return end
-        if dead and not kill.targetDead and kill.IsDeadEnemy("target") then kill.NoteDeath("your target") end
+        if dead and not kill.targetDead and kill.IsDeadEnemy("target") then kill.UnitDied("target", "your target") end
         kill.targetDead = dead
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
-        if Readable(unit) and type(unit) == "string" and kill.IsDeadEnemy(unit) then kill.NoteDeath("a nameplate") end
+        if Readable(unit) and type(unit) == "string" and kill.IsDeadEnemy(unit) then kill.UnitDied(unit, "a nameplate") end
     end
 end
 
@@ -2385,6 +2472,7 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
             if ConsumeBuffProcs(castName) then
                 C_Timer.After(0.3, GuardedHandler(function() ResolvePendingConsumes(true) end))
             end
+            Remind.OnCast(castName)
             local proc = castName and actionByName[castName]
             if proc then
                 local st = actionState[proc.key] or {}
@@ -2442,6 +2530,256 @@ SafeRegister(killFrame, "UNIT_HEALTH", "target")
 SafeRegister(killFrame, "UNIT_FLAGS", "target")
 killFrame:SetScript("OnEvent", GuardedHandler(function(self, event, unit)
     if initialized then kill.OnEvent(event, unit) end
+end))
+end
+
+-- Blizzard's Cooldown Manager can see your buffs in combat, which addons
+-- can't. When a proc is in its Tracked Buffs, ProcDoc follows the icon
+-- Blizzard shows for it: while buffs are hidden, an active icon turns the
+-- proc on (source "cdm") and an inactive one turns it off. Once buffs are
+-- readable again the normal scan is the truth and the "cdm" source is
+-- dropped. How an icon says "active" isn't documented for this client, so
+-- CDM.Active tries several signals and `/procdoc cdm` shows what it finds.
+local CDM = {
+    VIEWERS  = { "BuffIconCooldownViewer", "BuffBarCooldownViewer" },
+    byID     = {},                           -- cooldownID -> proc, or false
+    live     = {},                           -- procKey -> true while its icon is active
+    sawAura  = setmetatable({}, { __mode = "k" }),  -- icon -> true once it had an aura
+    elapsed  = 0,
+    wiped    = 0,
+    wasLocked = false,
+}
+
+function CDM.Items()
+    local out = {}
+    for _, name in ipairs(CDM.VIEWERS) do
+        local viewer = _G[name]
+        if type(viewer) == "table" and type(viewer.GetChildren) == "function" then
+            for _, f in ipairs({ viewer:GetChildren() }) do out[#out + 1] = f end
+        end
+    end
+    return out
+end
+
+function CDM.CooldownID(f)
+    local id = Clean(f.cooldownID)
+    if id == nil and type(f.GetCooldownID) == "function" then id = Clean(SafeCall(f.GetCooldownID, f)) end
+    if type(id) == "number" then return id end
+end
+
+-- Every spell ID Blizzard ties to a Cooldown Manager entry
+function CDM.SpellIDs(cooldownID, f)
+    local ids = {}
+    local function Add(v)
+        v = Clean(v)
+        if type(v) == "number" then ids[#ids + 1] = v end
+    end
+    local info = Clean(SafeCall(C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo, cooldownID))
+    if type(info) == "table" then
+        Add(info.spellID); Add(info.overrideSpellID); Add(info.overrideTooltipSpellID)
+        local linked = Clean(info.linkedSpellIDs)
+        if type(linked) == "table" then
+            for _, v in ipairs(linked) do Add(v) end
+        end
+    end
+    if f then
+        for _, m in ipairs({ "GetSpellID", "GetBaseSpellID", "GetAuraSpellID" }) do
+            if type(f[m]) == "function" then Add(SafeCall(f[m], f)) end
+        end
+    end
+    return ids
+end
+
+function CDM.ProcFor(cooldownID, f)
+    if not cooldownID then return nil end
+    local cached = CDM.byID[cooldownID]
+    if cached ~= nil then return cached or nil end
+    local ids = CDM.SpellIDs(cooldownID, f)
+    local proc
+    for _, id in ipairs(ids) do
+        proc = buffBySpellID[id]
+        if not proc then
+            for _, p in ipairs(buffProcs) do
+                for _, t in ipairs(p.talentIDs or {}) do
+                    if t == id then proc = p end
+                end
+            end
+        end
+        if not proc then
+            local n = GetSpellNameCompat(id)
+            proc = n and (buffByName[n] or nil)
+        end
+        if proc then break end
+    end
+    if #ids > 0 then CDM.byID[cooldownID] = proc or false end
+    return proc
+end
+
+-- true / false, or nil when the icon gives nothing readable; plus how
+function CDM.Active(f)
+    local shown = SafeCall(f.IsShown, f)
+    if Readable(shown) and not shown then return false, "hidden" end
+    if type(f.IsActive) == "function" then
+        local v = SafeCall(f.IsActive, f)
+        if Readable(v) and type(v) == "boolean" then return v, "IsActive" end
+    end
+    local v = f.isActive
+    if Readable(v) and type(v) == "boolean" then return v, "isActive" end
+    local inst = f.auraInstanceID
+    if issecret(inst) or inst ~= nil then           -- a hidden value still means "there is one"
+        CDM.sawAura[f] = true
+        return true, "aura"
+    end
+    if CDM.sawAura[f] then return false, "aura gone" end
+    if Readable(shown) then return true, "shown" end
+    return nil, "unknown"
+end
+
+function CDM.Poll()
+    local now = GetTime()
+    if not auraLocked then
+        if CDM.wasLocked then
+            -- buffs readable again: say whether the icons were right, then let the scan rule
+            for key in pairs(CDM.live) do
+                local a = alerts[key]
+                Trace("after combat: Cooldown Manager said %s was up; the buff check %s", key,
+                    (a and a.sources.aura) and "agrees" or "does NOT find it")
+                local proc = procByKey[key]
+                if proc then SetLive(proc, "cdm", nil) end
+            end
+            wipe(CDM.live)
+        end
+        CDM.wasLocked = false
+        if now - CDM.wiped > 10 then wipe(CDM.byID); CDM.wiped = now end   -- pick up setting changes
+        return
+    end
+    CDM.wasLocked = true
+    local want, how = {}, {}
+    for _, f in ipairs(CDM.Items()) do
+        local proc = CDM.ProcFor(CDM.CooldownID(f), f)
+        if proc and IsProcEnabled(proc) then
+            local active, why = CDM.Active(f)
+            if active then want[proc.key], how[proc.key] = proc, why end
+        end
+    end
+    for key, proc in pairs(want) do
+        if not CDM.live[key] then
+            CDM.live[key] = true
+            local dur = proc.lastDuration or proc.predictDuration or 10
+            SetLive(proc, "cdm", { exp = now + dur, dur = dur })
+            Trace("%s is up in the Cooldown Manager (%s)", key, how[key])
+        end
+    end
+    for key in pairs(CDM.live) do
+        if not want[key] then
+            CDM.live[key] = nil
+            local proc = procByKey[key]
+            if proc then SetLive(proc, "cdm", nil) end
+            Trace("%s went away in the Cooldown Manager", key)
+        end
+    end
+end
+
+-- One-time tip per proc: it's offered in the Cooldown Manager but not tracked
+function CDM.Tip()
+    local api, cats = C_CooldownViewer, Enum and Enum.CooldownViewerCategory
+    if not (api and api.GetCooldownViewerCategorySet and cats) then return end
+    local tracked = {}
+    for _, f in ipairs(CDM.Items()) do
+        local p = CDM.ProcFor(CDM.CooldownID(f), f)
+        if p then tracked[p.key] = true end
+    end
+    local told = ProcDocDB.cdmTips[playerClass] or {}
+    ProcDocDB.cdmTips[playerClass] = told
+    for _, cat in ipairs({ cats.TrackedBuff, cats.TrackedBar }) do
+        local ids = Clean(SafeCall(api.GetCooldownViewerCategorySet, cat, true))
+        if type(ids) == "table" then
+            for _, cid in ipairs(ids) do
+                local p = CDM.ProcFor(Clean(cid))
+                if p and not tracked[p.key] and not told[p.key] and IsProcEnabled(p) then
+                    told[p.key] = true
+                    Print("tip: the game hides buffs from addons in combat. Add |cffffd100" .. p.buffName ..
+                        "|r to Blizzard's Cooldown Manager (Tracked Buffs) and ProcDoc will catch it mid-fight too.")
+                end
+            end
+        end
+    end
+end
+
+-- /procdoc cdm: what the Cooldown Manager is tracking and what ProcDoc reads from it
+function CDM.Report()
+    wipe(CDM.byID)
+    local keysShown = false
+    for _, name in ipairs(CDM.VIEWERS) do
+        local viewer = _G[name]
+        if type(viewer) ~= "table" or type(viewer.GetChildren) ~= "function" then
+            Print(name .. ": not found")
+        else
+            local kids = { viewer:GetChildren() }
+            Print(string.format("%s: %d icon(s)", name, #kids))
+            for _, f in ipairs(kids) do
+                local cid = CDM.CooldownID(f)
+                if cid then
+                    local names = {}
+                    for _, id in ipairs(CDM.SpellIDs(cid, f)) do
+                        names[#names + 1] = (GetSpellNameCompat(id) or "?") .. " " .. id
+                    end
+                    local proc = CDM.ProcFor(cid, f)
+                    local active, why = CDM.Active(f)
+                    local state = (active == nil and "unknown") or (active and "active") or "inactive"
+                    DEFAULT_CHAT_FRAME:AddMessage(string.format("  #%d %s -> %s, %s (%s)", cid,
+                        #names > 0 and table.concat(names, ", ") or "no spell info",
+                        proc and ("|cff00ff96" .. proc.buffName .. "|r") or "not a ProcDoc proc", state, why))
+                    if not keysShown then
+                        -- the icon's own fields, to see which ones say "active" on this client
+                        keysShown = true
+                        local keys = {}
+                        for k in pairs(f) do
+                            if type(k) == "string" and (k:lower():find("aura") or k:lower():find("active")
+                                or k:lower():find("spell") or k:lower():find("cooldown")) then
+                                keys[#keys + 1] = k
+                            end
+                        end
+                        table.sort(keys)
+                        Print("icon fields: " .. (#keys > 0 and table.concat(keys, ", ") or "none"))
+                        Trace("Cooldown Manager icon fields: %s", table.concat(keys, ", "))
+                    end
+                end
+            end
+        end
+    end
+end
+
+do
+local cdmFrame = CreateFrame("Frame", "ProcDocCooldownManagerFrame", UIParent)
+SafeRegister(cdmFrame, "PLAYER_ENTERING_WORLD")
+cdmFrame:SetScript("OnEvent", GuardedHandler(function()
+    C_Timer.After(5, GuardedHandler(function() if initialized then CDM.Tip() end end))
+end))
+cdmFrame:SetScript("OnUpdate", GuardedHandler(function(self, dt)
+    CDM.elapsed = CDM.elapsed + dt
+    if CDM.elapsed < 0.1 or not initialized then return end
+    CDM.elapsed = 0
+    CDM.Poll()
+end))
+end
+
+-- Reminders re-check on death and coming back, and a few seconds after
+-- zoning (buffs can read empty for a moment then)
+do
+local remindFrame = CreateFrame("Frame", "ProcDocReminderFrame", UIParent)
+for _, ev in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST" }) do
+    SafeRegister(remindFrame, ev)
+end
+remindFrame:SetScript("OnEvent", GuardedHandler(function(self, event)
+    if event == "PLAYER_ENTERING_WORLD" then
+        Remind.quietUntil = GetTime() + 3
+        C_Timer.After(3.1, GuardedHandler(function()
+            if initialized then CheckProcs(); Remind.RefreshAll() end
+        end))
+        return
+    end
+    if initialized then Remind.RefreshAll() end
 end))
 end
 
@@ -2803,6 +3141,7 @@ local API = {
     PopAll = PopAll,
     VERSION = VERSION,
     IS_FOREVER = IS_FOREVER,
+    Remind = Remind,
 }
 
 -- Sections 12-13 live inside BuildOptionsModule (run once, right below) so
@@ -2824,8 +3163,8 @@ local function BuildOptionsModule()
         API.StyleAnchors, API.ROTATION_OPTIONS, API.PlaySoundKey, API.TimerFont, API.COLOR_BY_KEY, API.COLOR_CHOICES, API.GetActionProcDuration, API.RemoveListedProc
     local FONT_CHOICES, OUTLINE_CHOICES, SOUND_CHANNELS, SetCVarCompat, ProcDoc_LoadGlobalsFromDB, IMG, DEFAULT_ALERT_TEXTURE, IMAGE_LIST =
         API.FONT_CHOICES, API.OUTLINE_CHOICES, API.SOUND_CHANNELS, API.SetCVarCompat, API.ProcDoc_LoadGlobalsFromDB, API.IMG, API.DEFAULT_ALERT_TEXTURE, API.IMAGE_LIST
-    local IMAGE_SIZE, procByKey, SetOptionsOpen, StopTests, VERSION, IS_FOREVER =
-        API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER
+    local IMAGE_SIZE, procByKey, SetOptionsOpen, StopTests, VERSION, IS_FOREVER, Remind =
+        API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER, API.Remind
 
 -- 12) GUI widget helpers (flat, self-contained: no dependency on Blizzard
 --     dropdown/slider templates, which differ between clients)
@@ -3084,6 +3423,7 @@ local function PreviewAfterChange(proc)
 end
 
 local function ProcKindText(proc)
+    if Remind.Is(proc) then return "Reminder: shows when " .. proc.buffName .. " is missing" end
     if proc.auto then return "Detected from Blizzard's proc overlay" end
     if proc.custom then return "Your own buff proc" .. (proc.spellID and (" (spell " .. proc.spellID .. ")") or "") end
     if proc.isAction then
@@ -3314,9 +3654,9 @@ local function RebuildProcList()
     local add = listPage.addBox
     if not add then
         add = CreateFrame("Frame", nil, child)
-        add:SetSize(COL, 100)
+        add:SetSize(COL, 112)
         CreateHeader(add, "Add a proc", COL):SetPoint("TOPLEFT")
-        local tip = Label(add, "Track any buff: type its exact name or spell ID,\nor pick one you have right now.")
+        local tip = Label(add, "Track any buff: type its exact name or spell ID,\nor pick one you have right now. On its page, pick\nwhether it alerts when it shows up or goes missing.")
         tip:SetPoint("TOPLEFT", 0, -22)
         tip:SetJustifyH("LEFT")
         local function Added(proc, err)
@@ -3330,7 +3670,7 @@ local function RebuildProcList()
         end
         local edit = CreateFrame("EditBox", nil, add, "InputBoxTemplate")
         edit:SetSize(COL - 72, 22)
-        edit:SetPoint("TOPLEFT", 6, -50)
+        edit:SetPoint("TOPLEFT", 6, -62)
         edit:SetAutoFocus(false)
         local function Submit()
             edit:ClearFocus()
@@ -3348,7 +3688,7 @@ local function RebuildProcList()
                 if v == nil or v == "none" then return end
                 Added(AddCustomProc(v))
             end)
-        pick:SetPoint("TOPLEFT", 0, -78)
+        pick:SetPoint("TOPLEFT", 0, -90)
         pick.Refresh = function(self) self.text:SetText("Pick from my current buffs...") end
         pick:Refresh()
         listPage.addBox = add
@@ -3605,6 +3945,20 @@ local function BuildProcPage(parent)
         page.stackWidgets[#page.stackWidgets + 1] = widget
         return st:Add(widget, height, x, gap)
     end
+    -- Proc or reminder: alert when the buff shows up, or when it's missing
+    S(CreateHeader(child, "Alert me when", COL), 18)
+    S(CreateDropdown(child, COL, function()
+            return { { value = "up", label = "It shows up (a proc)" },
+                     { value = "missing", label = "It's missing (a reminder to put it back)" } }
+        end,
+        function() return pageProc and PS(pageProc.key).remind or "up" end,
+        function(v)
+            if not pageProc then return end
+            if v == "missing" then PSW(pageProc.key).remind = "missing" else PSW(pageProc.key).remind = nil end
+            procPage.kind:SetText(ProcKindText(pageProc))
+            ReevaluateAll()
+        end), 22, nil, 14)
+
     S(CreateHeader(child, "Stacks", COL), 18)
     local show = S(Label(child, "For buffs that stack. Dots show how many stacks you\nhave; drag them on screen, Shift + wheel to resize."), 26, nil, 8)
     show:SetJustifyH("LEFT")
@@ -4292,6 +4646,8 @@ SlashCmdList["PROCDOC"] = function(msg)
         StopTests()
     elseif cmd == "buffs" then
         PrintBuffs()
+    elseif cmd == "cdm" then
+        CDM.Report()
     elseif cmd == "stacktest" then
         local want = (msg or ""):lower():match("^%s*%S+%s+(.-)%s*$")
         local pick
@@ -4351,7 +4707,7 @@ SlashCmdList["PROCDOC"] = function(msg)
         SetMinimapButtonShown(G.minimapHide)
         Print("minimap button " .. (G.minimapHide and "hidden." or "shown."))
     elseif cmd == "help" then
-        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, trace, debug")
+        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm, trace, debug")
     else
         ToggleOptions()
     end

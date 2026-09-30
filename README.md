@@ -33,8 +33,9 @@ It works out of the box: install it and procs light up. When you want to, every 
 2. **Drag-and-drop layout**: with the options open, drag any alert to where you want it. **Shift + mouse wheel** over an alert resizes it. Each alert can also be shown on **both sides** of the screen as a mirrored pair.
 3. **Customisable countdowns**: drag the number to any spot on its alert, and Shift + wheel over it to resize it. Choose the font, outline, colors, when it turns "running out", and whether to show tenths.
 4. **Your own procs**: track any buff by name or spell ID, or pick one you have right now (in combat, pick from the buffs you had earlier). Anything the game flags with its own proc glow is also picked up automatically.
-5. **Reaction abilities without action bars**: Overpower, Revenge, Riposte, Counterattack and Mongoose Bite light up when they become usable.
-6. **Clears when used**: alerts go away as soon as the proc is spent, even in combat, where Forever hides buff details from addons.
+5. **Buff reminders**: set any buff to alert when it's **missing** instead, like Slice and Dice, an armor or Intellect, so you know to put it back, in or out of combat.
+6. **Reaction abilities without action bars**: Overpower, Revenge, Riposte, Counterattack and Mongoose Bite light up when they become usable.
+7. **Clears when used**: alerts go away as soon as the proc is spent, even in combat, where Forever hides buff details from addons.
 
 ---
 
@@ -131,7 +132,7 @@ Drop a `.tga` (power-of-two size, e.g. 128x256 or 256x128) into `ProcDoc\img\`. 
 
 ## Supported Procs
 
-ProcDoc only alerts on **reaction** procs, meaning something just happened that you should act on. It doesn't alert on buffs you maintain or on abilities that are simply off cooldown. These are the talent and ability procs built in for Forever:
+ProcDoc only alerts on **reaction** procs, meaning something just happened that you should act on. It doesn't alert on buffs you maintain or on abilities that are simply off cooldown (if you want a nudge when a maintained buff drops, add it yourself and set it to remind you when it's missing). These are the talent and ability procs built in for Forever:
 
 | Class | Built-in procs |
 | --- | --- |
