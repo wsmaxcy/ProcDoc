@@ -2545,6 +2545,9 @@ local CDM = {
     byID     = {},                           -- cooldownID -> proc, or false
     live     = {},                           -- procKey -> true while its icon is active
     sawAura  = setmetatable({}, { __mode = "k" }),  -- icon -> true once it had an aura
+    goneSince = {},                          -- procKey -> when its icon started saying "not active"
+    GONE_DELAY = 0.5,
+    SURE     = { IsActive = true, isActive = true, ["aura gone"] = true },  -- trusted "not active" answers
     elapsed  = 0,
     wiped    = 0,
     wasLocked = false,
@@ -2615,16 +2618,17 @@ function CDM.ProcFor(cooldownID, f)
     return proc
 end
 
--- true / false, or nil when the icon gives nothing readable; plus how
+-- true / false, or nil when the icon gives nothing readable; plus how.
+-- IsActive() is what Forever's icons answer in combat, so it's asked first.
 function CDM.Active(f)
-    local shown = SafeCall(f.IsShown, f)
-    if Readable(shown) and not shown then return false, "hidden" end
     if type(f.IsActive) == "function" then
         local v = SafeCall(f.IsActive, f)
         if Readable(v) and type(v) == "boolean" then return v, "IsActive" end
     end
     local v = f.isActive
     if Readable(v) and type(v) == "boolean" then return v, "isActive" end
+    local shown = SafeCall(f.IsShown, f)
+    if Readable(shown) and not shown then return false, "hidden" end
     local inst = f.auraInstanceID
     if issecret(inst) or inst ~= nil then           -- a hidden value still means "there is one"
         CDM.sawAura[f] = true
@@ -2648,18 +2652,23 @@ function CDM.Poll()
                 if proc then SetLive(proc, "cdm", nil) end
             end
             wipe(CDM.live)
+            wipe(CDM.goneSince)
         end
         CDM.wasLocked = false
         if now - CDM.wiped > 10 then wipe(CDM.byID); CDM.wiped = now end   -- pick up setting changes
         return
     end
     CDM.wasLocked = true
-    local want, how = {}, {}
+    local want, how, gone = {}, {}, {}
     for _, f in ipairs(CDM.Items()) do
         local proc = CDM.ProcFor(CDM.CooldownID(f), f)
         if proc and IsProcEnabled(proc) then
             local active, why = CDM.Active(f)
-            if active then want[proc.key], how[proc.key] = proc, why end
+            if active then
+                want[proc.key], how[proc.key] = proc, why
+            elseif active == false and CDM.SURE[why] then
+                gone[proc.key] = gone[proc.key] or { proc = proc, why = why }
+            end
         end
     end
     for key, proc in pairs(want) do
@@ -2676,6 +2685,24 @@ function CDM.Poll()
             local proc = procByKey[key]
             if proc then SetLive(proc, "cdm", nil) end
             Trace("%s went away in the Cooldown Manager", key)
+        end
+    end
+    -- A definite "not active" is the truth while buffs are hidden: drop our own
+    -- guess too (expected expiry, killing-blow guess, recast), so a spent proc
+    -- hides and a reminder shows the moment the buff is gone. It has to hold
+    -- for GONE_DELAY first: the icon updates a moment after the buff does.
+    for key in pairs(CDM.goneSince) do
+        if not gone[key] or want[key] then CDM.goneSince[key] = nil end
+    end
+    for key, g in pairs(gone) do
+        if not want[key] then
+            CDM.goneSince[key] = CDM.goneSince[key] or now
+            local a = alerts[key]
+            if a and a.sources.aura and now - CDM.goneSince[key] >= CDM.GONE_DELAY then
+                a.pendingConsume = nil
+                ClearAuraSource(g.proc)
+                Trace("%s is gone in the Cooldown Manager (%s)", key, g.why)
+            end
         end
     end
 end
@@ -2729,7 +2756,7 @@ function CDM.Report()
                     local state = (active == nil and "unknown") or (active and "active") or "inactive"
                     DEFAULT_CHAT_FRAME:AddMessage(string.format("  #%d %s -> %s, %s (%s)", cid,
                         #names > 0 and table.concat(names, ", ") or "no spell info",
-                        proc and ("|cff00ff96" .. proc.buffName .. "|r") or "not a ProcDoc proc", state, why))
+                        proc and ("|cff00ff96" .. proc.buffName .. "|r") or "not in ProcDoc yet (add it in /procdoc for an alert or reminder)", state, why))
                     if not keysShown then
                         -- the icon's own fields, to see which ones say "active" on this client
                         keysShown = true
