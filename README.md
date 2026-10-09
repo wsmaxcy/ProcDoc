@@ -149,6 +149,8 @@ Anything Forever adds is caught by **auto-detect** if the game shows its own pro
 
 **About combat:** Forever hides your buffs from addons while you're in combat. ProcDoc still catches the procs it can see coming: **Remorseless Attacks** lights up on your killing blow (an enemy dying at the same moment the buff lands on you, so a party member's kill doesn't set it off), **Enrage** when you take a critical hit, and the reaction abilities when you dodge, parry or block. Other buff procs that start mid-fight appear as soon as combat ends, and any proc that was already up before the fight stays up until it's used or runs out.
 
+**For the most accurate alerts, use Blizzard's Cooldown Manager.** It can see your buffs in combat, so ProcDoc follows it: any proc in its **Tracked Buffs** (Shadow Trance, Clearcasting, Remorseless and more) lights up and clears mid-fight exactly. If it's off, ProcDoc tells you once; type `/procdoc cdm on` to switch it on, then add your procs to Tracked Buffs. `/procdoc cdm` shows what it's tracking.
+
 ---
 
 ## License

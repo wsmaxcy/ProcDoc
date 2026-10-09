@@ -62,6 +62,7 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.stackMax            = ProcDocDB.stackMax or {}              -- [class][procKey] = highest stacks seen
     ProcDocDB.seen                = ProcDocDB.seen or {}                  -- [class][procKey] = true once the buff was read
     ProcDocDB.cdmTips             = ProcDocDB.cdmTips or {}               -- [class][procKey] = true once the Cooldown Manager tip was shown
+    ProcDocDB.cdmOffTold          = ProcDocDB.cdmOffTold or {}            -- ["Name-Realm"] = true once told the Cooldown Manager is off
 end
 
 local function ProcDoc_LoadGlobalsFromDB()
@@ -2707,10 +2708,56 @@ function CDM.Poll()
     end
 end
 
--- One-time tip per proc: it's offered in the Cooldown Manager but not tracked
-function CDM.Tip()
+-- Is Blizzard's Cooldown Manager switched on? nil when this client can't say
+function CDM.Enabled()
+    local get = (C_CVar and C_CVar.GetCVar) or _G.GetCVar
+    local v = Clean(SafeCall(get, "cooldownViewerEnabled"))
+    if v == nil then return nil end
+    return v == "1" or v == 1 or v == true
+end
+
+-- ProcDoc's enabled buff procs that the Cooldown Manager offers to track;
+-- second value is false when the game wouldn't say what it offers
+function CDM.Offered()
     local api, cats = C_CooldownViewer, Enum and Enum.CooldownViewerCategory
-    if not (api and api.GetCooldownViewerCategorySet and cats) then return end
+    local out, seen, answered = {}, {}, false
+    if api and api.GetCooldownViewerCategorySet and cats then
+        for _, cat in ipairs({ cats.TrackedBuff, cats.TrackedBar }) do
+            local ids = Clean(SafeCall(api.GetCooldownViewerCategorySet, cat, true))
+            if type(ids) == "table" then
+                answered = true
+                for _, cid in ipairs(ids) do
+                    local p = CDM.ProcFor(Clean(cid))
+                    if p and not seen[p.key] and IsProcEnabled(p) then
+                        seen[p.key] = true
+                        out[#out + 1] = p
+                    end
+                end
+            end
+        end
+    end
+    return out, answered
+end
+
+-- One-time tips after login. If the Cooldown Manager is off: say so once per
+-- character, and only when it would help this character. Once it's on: name
+-- each proc it offers that isn't in Tracked Buffs yet (once per class).
+function CDM.Tip()
+    if not C_CooldownViewer then return end
+    local offered, answered = CDM.Offered()
+    if CDM.Enabled() == false then
+        local useful = #offered > 0 or (not answered and #buffProcs > 0)
+        local who = (Clean(SafeCall(UnitName, "player")) or "?") .. "-" .. (Clean(SafeCall(GetRealmName)) or "?")
+        if useful and not ProcDocDB.cdmOffTold[who] then
+            ProcDocDB.cdmOffTold[who] = true
+            local names = {}
+            for _, p in ipairs(offered) do names[#names + 1] = p.buffName end
+            Print("tip: Blizzard's Cooldown Manager is off. The game hides buffs from addons in combat; with it on, " ..
+                "ProcDoc can catch " .. (#names > 0 and ("|cffffd100" .. table.concat(names, ", ") .. "|r") or "your procs") ..
+                " mid-fight. Type |cff00ffff/procdoc cdm on|r to turn it on.")
+        end
+        return
+    end
     local tracked = {}
     for _, f in ipairs(CDM.Items()) do
         local p = CDM.ProcFor(CDM.CooldownID(f), f)
@@ -2718,25 +2765,37 @@ function CDM.Tip()
     end
     local told = ProcDocDB.cdmTips[playerClass] or {}
     ProcDocDB.cdmTips[playerClass] = told
-    for _, cat in ipairs({ cats.TrackedBuff, cats.TrackedBar }) do
-        local ids = Clean(SafeCall(api.GetCooldownViewerCategorySet, cat, true))
-        if type(ids) == "table" then
-            for _, cid in ipairs(ids) do
-                local p = CDM.ProcFor(Clean(cid))
-                if p and not tracked[p.key] and not told[p.key] and IsProcEnabled(p) then
-                    told[p.key] = true
-                    Print("tip: the game hides buffs from addons in combat. Add |cffffd100" .. p.buffName ..
-                        "|r to Blizzard's Cooldown Manager (Tracked Buffs) and ProcDoc will catch it mid-fight too.")
-                end
-            end
+    for _, p in ipairs(offered) do
+        if not tracked[p.key] and not told[p.key] then
+            told[p.key] = true
+            Print("tip: Add |cffffd100" .. p.buffName ..
+                "|r to Blizzard's Cooldown Manager (Tracked Buffs) and ProcDoc will catch it mid-fight too.")
         end
     end
+end
+
+-- /procdoc cdm on: switch the Cooldown Manager on, then point out what to track
+function CDM.TurnOn()
+    if CDM.Enabled() == true then
+        Print("Blizzard's Cooldown Manager is already on.")
+    else
+        SetCVarCompat("cooldownViewerEnabled", "1")
+        if CDM.Enabled() == false then
+            Print("couldn't turn the Cooldown Manager on from here. Turn it on in the game's Options (search for Cooldown Manager).")
+            return
+        end
+        Print("turned on Blizzard's Cooldown Manager.")
+    end
+    C_Timer.After(1, GuardedHandler(function() CDM.Tip() end))
 end
 
 -- /procdoc cdm: what the Cooldown Manager is tracking and what ProcDoc reads from it
 function CDM.Report()
     wipe(CDM.byID)
     local keysShown = false
+    local on = CDM.Enabled()
+    Print("Blizzard's Cooldown Manager: " .. ((on == true and "on") or
+        (on == false and "|cffff5555off|r (type |cff00ffff/procdoc cdm on|r)") or "unknown"))
     for _, name in ipairs(CDM.VIEWERS) do
         local viewer = _G[name]
         if type(viewer) ~= "table" or type(viewer.GetChildren) ~= "function" then
@@ -4674,7 +4733,7 @@ SlashCmdList["PROCDOC"] = function(msg)
     elseif cmd == "buffs" then
         PrintBuffs()
     elseif cmd == "cdm" then
-        CDM.Report()
+        if (msg or ""):lower():match("^%s*%S+%s+on%s*$") then CDM.TurnOn() else CDM.Report() end
     elseif cmd == "stacktest" then
         local want = (msg or ""):lower():match("^%s*%S+%s+(.-)%s*$")
         local pick
@@ -4734,7 +4793,7 @@ SlashCmdList["PROCDOC"] = function(msg)
         SetMinimapButtonShown(G.minimapHide)
         Print("minimap button " .. (G.minimapHide and "hidden." or "shown."))
     elseif cmd == "help" then
-        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm, trace, debug")
+        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [on], trace, debug")
     else
         ToggleOptions()
     end
