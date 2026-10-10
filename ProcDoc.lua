@@ -1609,7 +1609,20 @@ local function MakeDetectedProc(spellID, info)
     }
 end
 
+-- A proc the player added: a buff, or (kind "ability") an ability that lights
+-- up whenever it's ready to use, like the built-in reaction abilities
 local function MakeCustomProc(key, info)
+    if info.kind == "ability" then
+        return {
+            key              = key,
+            buffName         = info.name,
+            spellName        = info.name,
+            spellID          = info.spellID,
+            alertTexturePath = DEFAULT_ALERT_TEXTURE,
+            alertStyle       = "TOP",
+            custom           = true,
+        }
+    end
     return {
         key              = key,
         buffName         = info.name,
@@ -1630,7 +1643,8 @@ local function BuildClassProcs()
     if custom then
         local merged = {}
         for key, info in pairs(custom) do
-            local builtin = (info.spellID and buffBySpellID[info.spellID]) or (info.name and buffByName[info.name])
+            local builtin = info.kind ~= "ability"
+                and ((info.spellID and buffBySpellID[info.spellID]) or (info.name and buffByName[info.name]))
             if builtin and not builtin.custom and not builtin.auto then
                 -- a buff the player added that's now built in: keep their look
                 -- (not the spot for one-side-per-stack procs: they start as a pair)
@@ -1649,7 +1663,7 @@ local function BuildClassProcs()
                 custom[key] = nil
                 merged[#merged + 1] = builtin.buffName
             elseif not procByKey[key] then
-                RegisterProc(MakeCustomProc(key, info), false)
+                RegisterProc(MakeCustomProc(key, info), info.kind == "ability")
             end
         end
         if #merged > 0 then
@@ -2314,8 +2328,11 @@ local function RebuildActionSlots()
     end
 end
 
+-- How long a reaction alert stays up; nil = until the ability is used (or
+-- stops being usable). A saved 0 means exactly that.
 local function GetActionProcDuration(proc)
     local d = PS(proc.key).duration
+    if d == 0 then return nil end
     if d and d > 0 then return d end
     return ACTION_PROC_DEFAULT_DURATIONS[proc.spellName or ""]
 end
@@ -3499,6 +3516,22 @@ local API = {
     IS_FOREVER = IS_FOREVER,
     Remind = Remind,
     CDM = CDM,
+    -- Switches a proc the player added between a buff and an ability ("ready
+    -- to use"). It's rebuilt as a new proc, so its old alert is dropped.
+    SetCustomKind = function(key, ability)
+        local info = ProcDocDB.custom[playerClass] and ProcDocDB.custom[playerClass][key]
+        if not info then return end
+        if ability then info.kind = "ability" else info.kind = nil end
+        local a = alerts[key]
+        if a then
+            for _, p in ipairs(a.pieces) do p:Hide() end
+            alerts[key] = nil
+        end
+        actionState[key] = nil
+        BuildClassProcs()
+        if CheckProcs then CheckProcs() end
+        CheckAllActionProcs()
+    end,
 }
 
 -- Sections 12-13 live inside BuildOptionsModule (run once, right below) so
@@ -3522,6 +3555,7 @@ local function BuildOptionsModule()
         API.FONT_CHOICES, API.OUTLINE_CHOICES, API.SOUND_CHANNELS, API.SetCVarCompat, API.ProcDoc_LoadGlobalsFromDB, API.IMG, API.DEFAULT_ALERT_TEXTURE, API.IMAGE_LIST
     local IMAGE_SIZE, procByKey, SetOptionsOpen, StopTests, VERSION, IS_FOREVER, Remind, CDM =
         API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER, API.Remind, API.CDM
+    local SetCustomKind = API.SetCustomKind
 
 -- 12) GUI widget helpers (flat, self-contained: no dependency on Blizzard
 --     dropdown/slider templates, which differ between clients)
@@ -3782,6 +3816,9 @@ end
 local function ProcKindText(proc)
     if Remind.Is(proc) then return "Reminder: shows when " .. proc.buffName .. " is missing" end
     if proc.auto then return "Detected from Blizzard's proc overlay" end
+    if proc.isAction and proc.custom then
+        return "Your own ability: lights up when " .. (proc.localName or proc.spellName) .. " is ready to use"
+    end
     if proc.custom then return "Your own buff proc" .. (proc.spellID and (" (spell " .. proc.spellID .. ")") or "") end
     if proc.isAction then
         return "Reaction ability: lights up when " .. (proc.localName or proc.spellName) .. " becomes usable"
@@ -4013,7 +4050,7 @@ local function RebuildProcList()
         add = CreateFrame("Frame", nil, child)
         add:SetSize(COL, 112)
         CreateHeader(add, "Add a proc", COL):SetPoint("TOPLEFT")
-        local tip = Label(add, "Track any buff: type its exact name or spell ID,\nor pick one you have right now. On its page, pick\nwhether it alerts when it shows up or goes missing.")
+        local tip = Label(add, "Track any buff or ability: type its exact name or\nspell ID, or pick a buff you have. On its page, pick\nwhen it alerts: shows up, goes missing, or ready to use.")
         tip:SetPoint("TOPLEFT", 0, -22)
         tip:SetJustifyH("LEFT")
         local function Added(proc, err)
@@ -4296,25 +4333,46 @@ local function BuildProcPage(parent)
     end), 24, nil, 10)
     -- Buff procs get a Stacks section; reaction abilities get the reaction
     -- window slider in the same spot (BindProcPage shows the one that fits).
+    -- What the alert follows: the buff showing up (a proc), the buff missing
+    -- (a reminder), or, for procs the player added, the ability being ready to
+    -- use (it then works like the reaction abilities). Built-in reaction
+    -- abilities only have the one choice.
+    st:Add(CreateHeader(child, "Alert me when", COL), 18)
+    st:Add(CreateDropdown(child, COL, function()
+            if pageProc and pageProc.isAction and not pageProc.custom then
+                return { { value = "ready", label = "It's ready to use (a reaction ability)" } }
+            end
+            local out = { { value = "up", label = "It shows up (a proc)" },
+                          { value = "missing", label = "It's missing (a reminder to put it back)" } }
+            if pageProc and pageProc.custom then
+                out[#out + 1] = { value = "ready", label = "It's ready to use (an ability you cast)" }
+            end
+            return out
+        end,
+        function()
+            if not pageProc then return "up" end
+            if pageProc.isAction then return "ready" end
+            return PS(pageProc.key).remind or "up"
+        end,
+        function(v)
+            if not pageProc or (pageProc.isAction and not pageProc.custom) then return end
+            local key = pageProc.key
+            if v == "missing" then PSW(key).remind = "missing" else PSW(key).remind = nil end
+            if pageProc.custom and (v == "ready") ~= (pageProc.isAction and true or false) then
+                SetCustomKind(key, v == "ready")      -- buff <-> ability: rebuilt as a new proc
+                SelectView("PROC", key)
+                return
+            end
+            procPage.kind:SetText(ProcKindText(pageProc))
+            ReevaluateAll()
+        end), 22, nil, 14)
+
     local slotY = st.y
     page.stackWidgets = {}
     local function S(widget, height, x, gap)
         page.stackWidgets[#page.stackWidgets + 1] = widget
         return st:Add(widget, height, x, gap)
     end
-    -- Proc or reminder: alert when the buff shows up, or when it's missing
-    S(CreateHeader(child, "Alert me when", COL), 18)
-    S(CreateDropdown(child, COL, function()
-            return { { value = "up", label = "It shows up (a proc)" },
-                     { value = "missing", label = "It's missing (a reminder to put it back)" } }
-        end,
-        function() return pageProc and PS(pageProc.key).remind or "up" end,
-        function(v)
-            if not pageProc then return end
-            if v == "missing" then PSW(pageProc.key).remind = "missing" else PSW(pageProc.key).remind = nil end
-            procPage.kind:SetText(ProcKindText(pageProc))
-            ReevaluateAll()
-        end), 22, nil, 14)
 
     S(CreateHeader(child, "Stacks", COL), 18)
     local show = S(Label(child, "For buffs that stack. Dots show how many stacks you\nhave; drag them on screen, Shift + wheel to resize."), 26, nil, 8)
@@ -4393,12 +4451,12 @@ local function BuildProcPage(parent)
     page.yStacksEnd = st.y
 
     st.y = slotY
-    page.durationSlider = st:Add(CreateSlider(child, "Reaction window (seconds)", 1, 20, 0.5,
-        function(v) return string.format("%.1fs", v) end,
-        function() return pageProc and GetActionProcDuration(pageProc) or 5 end,
+    page.durationSlider = st:Add(CreateSlider(child, "Show for (seconds; 0 = until you use it)", 0, 20, 0.5,
+        function(v) return v < 0.25 and "until used" or string.format("%.1fs", v) end,
+        function() return pageProc and GetActionProcDuration(pageProc) or 0 end,
         function(v)
             if not pageProc then return end
-            PSW(pageProc.key).duration = v
+            PSW(pageProc.key).duration = (v < 0.25) and 0 or v
         end, COL), 38)
     page.yWithDuration = st.y
 
