@@ -38,6 +38,8 @@ local DEFAULTS = {
     soundChannel        = "Master",
     autoDetect          = true,
     hideBlizzardOverlay = false,
+    cdmAuto             = true,    -- switch Blizzard's Cooldown Manager on (once per character)
+    cdmHideBuffs        = true,    -- keep its Tracked Buffs icons invisible (ProcDoc still reads them)
     menuSide            = "LEFT",
     menuScale           = 1.0,
     minimapHide         = false,
@@ -63,6 +65,7 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.seen                = ProcDocDB.seen or {}                  -- [class][procKey] = true once the buff was read
     ProcDocDB.cdmTips             = ProcDocDB.cdmTips or {}               -- [class][procKey] = true once the Cooldown Manager tip was shown
     ProcDocDB.cdmOffTold          = ProcDocDB.cdmOffTold or {}            -- ["Name-Realm"] = true once told the Cooldown Manager is off
+    ProcDocDB.cdmAutoOn           = ProcDocDB.cdmAutoOn or {}             -- ["Name-Realm"] = true once ProcDoc switched it on there
 end
 
 local function ProcDoc_LoadGlobalsFromDB()
@@ -353,6 +356,35 @@ local PROC_DATA = {
             alertStyle       = "TOP",
             consumedBy       = "ANY",
         },
+        {
+            buffName         = "Missile Barrage", -- instant Arcane Missiles
+            spellIDs         = { 400588 },
+            alertTexturePath = IMG .. "PinkRuneArc.tga",
+            alertStyle       = "SIDES",
+            consumedBy       = { "Arcane Missiles" },
+        },
+        {
+            buffName         = "Fingers of Frost",
+            spellIDs         = { 400669 },
+            alertTexturePath = IMG .. "FrostShards.tga",
+            alertStyle       = "SIDES",
+            charges          = 2,
+            sidesByStacks    = true,             -- 1 stack: left side, 2 stacks: both sides
+            consumedBy       = "ANY",
+        },
+        {
+            buffName         = "Heating Up",      -- builds toward Hot Streak
+            spellIDs         = { 400625 },
+            alertTexturePath = IMG .. "FireBand.tga",
+            alertStyle       = "BOTTOM",
+            dotSlots         = 3,                -- stack dots underneath
+        },
+        {
+            buffName         = "Wake of Fire",
+            spellIDs         = { 11078 },
+            alertTexturePath = IMG .. "FireSwoosh.tga",
+            alertStyle       = "LEFT",
+        },
     },
     ["DRUID"] = {
         {
@@ -451,6 +483,7 @@ local ACTION_PROCS = {
             spellName        = "Overpower",
             spellID          = 7384,
             reactOn          = { target = { DODGE = true } },
+            anyStance        = true,              -- alert on the dodge in Berserker/Defensive Stance too
             cooldown         = 5,
             alertTexturePath = IMG .. "GlowingEyes.tga",
             alertStyle       = "TOP",
@@ -834,6 +867,24 @@ local Pips = { TEX = "Interface\\AddOns\\ProcDoc\\ProcDoc_Pip" }   -- tools/make
 
 function Pips.Enabled(proc)
     return not proc.isAction and not Remind.Is(proc) and PS(proc.key).stackDots ~= false
+end
+
+-- Stacks right now: the buff's own count when readable (or the Cooldown
+-- Manager's), else the charges left by our own counting while buffs are hidden
+function Pips.Count(a)
+    for _, name in ipairs({ "aura", "cdm", "sim" }) do
+        local src = a.sources[name]
+        if src and src.stacks then return src.stacks, src end
+    end
+    local src = a.sources.aura or a.sources.cdm
+    return src and src.charges, nil
+end
+
+-- "One side per stack" (pairs): the second side shows only at 2+ stacks
+function Pips.SidesByStacks(proc)
+    local v = PS(proc.key).sidesByStacks
+    if v == nil then v = proc.sidesByStacks end
+    return v and not proc.isAction and true or false
 end
 
 -- Dot size: per-proc if set, else scales with the alert like the countdown
@@ -1419,15 +1470,16 @@ local function OnUpdateHandler(self, elapsed)
 
             -- Stacks: live count from the buff, or a counting sample in previews
             local stacks, slots
+            local count, countSrc = Pips.Count(a)
             if Pips.Enabled(a.proc) then
                 if a.live then
-                    local src = a.sources.aura or a.sources.sim
-                    stacks = src and src.stacks
+                    stacks = countSrc and count
                     if stacks then
-                        slots = s.maxStacks or math.max(stacks, (src.slots or 0), a.proc.maxSeen or 0)
+                        slots = s.maxStacks or a.proc.dotSlots or
+                            math.max(stacks, (countSrc.slots or 0), a.proc.maxSeen or 0)
                     end
                 elseif a.test or unlockMode then
-                    local m = s.maxStacks or a.proc.maxSeen or 0
+                    local m = s.maxStacks or a.proc.dotSlots or a.proc.maxSeen or 0
                     if m >= 2 then
                         slots = m
                         stacks = math.floor((now - (a.testStart or unlockStart)) * 1.25) % m + 1
@@ -1439,25 +1491,31 @@ local function OnUpdateHandler(self, elapsed)
                 a.lastStacks = stacks
             end
             local pr, pg, pb = ColorRGB(s.pipColor or "gold")
+            -- one side per stack: a live pair below 2 stacks shows its first side only
+            local oneSide = a.live and not a.test and not unlockMode and a.numPieces == 2
+                and count and count < 2 and Pips.SidesByStacks(a.proc)
             for i = 1, a.numPieces do
                 local p = a.pieces[i]
-                p.tex:SetAlpha(alpha * popAlpha)
+                local away = oneSide and i == 2
+                p.tex:SetAlpha(away and 0 or alpha * popAlpha)
                 p.tex:SetSize(p.baseW * pulse * pop, p.baseH * pulse * pop)
-                if flashA > 0.01 then
+                if away then
+                    p.flash:Hide()
+                elseif flashA > 0.01 then
                     p.flash:SetAlpha(flashA * (s.alpha or 1))
                     p.flash:SetSize(p.baseW * pop * flashGrow, p.baseH * pop * flashGrow)
                     p.flash:Show()
                 else
                     p.flash:Hide()
                 end
-                if stacks and slots and not (i == 2 and s.pipOneSide) then
+                if stacks and slots and not away and not (i == 2 and s.pipOneSide) then
                     Pips.Draw(p.pipFrame, stacks, math.max(slots, stacks), pr, pg, pb,
                         now - (a.stackGainAt or 0), s.alpha or 1)
                     p.pipFrame:Show()
                 else
                     p.pipFrame:Hide()
                 end
-                if text and not (i == 2 and s.timerOneSide) then
+                if text and not away and not (i == 2 and s.timerOneSide) then
                     p.timer:SetText(text)
                     p.timer:SetTextColor(r, g, b)
                     p.timer:SetAlpha(G.timerTextAlpha or 0.85)
@@ -1570,8 +1628,32 @@ local function BuildClassProcs()
     for _, p in ipairs(ACTION_PROCS[playerClass] or {}) do RegisterProc(p, true) end
     local custom = ProcDocDB.custom[playerClass]
     if custom then
+        local merged = {}
         for key, info in pairs(custom) do
-            if not procByKey[key] then RegisterProc(MakeCustomProc(key, info), false) end
+            local builtin = (info.spellID and buffBySpellID[info.spellID]) or (info.name and buffByName[info.name])
+            if builtin and not builtin.custom and not builtin.auto then
+                -- a buff the player added that's now built in: keep their look
+                -- (not the spot for one-side-per-stack procs: they start as a pair)
+                local all = ClassSettings()
+                local s = all[key]
+                if s and not all[builtin.key] then
+                    if builtin.sidesByStacks then s.px, s.py, s.both, s.region = nil, nil, nil, nil end
+                    all[builtin.key] = s
+                end
+                all[key] = nil
+                local seen = ProcDocDB.stackMax[playerClass]
+                if seen and seen[key] then
+                    builtin.maxSeen = math.max(builtin.maxSeen or 0, seen[key])
+                    seen[builtin.key], seen[key] = builtin.maxSeen, nil
+                end
+                custom[key] = nil
+                merged[#merged + 1] = builtin.buffName
+            elseif not procByKey[key] then
+                RegisterProc(MakeCustomProc(key, info), false)
+            end
+        end
+        if #merged > 0 then
+            Print("now built in: |cffffd100" .. table.concat(merged, ", ") .. "|r (your settings for them carried over).")
         end
     end
     local detected = ProcDocDB.detected[playerClass]
@@ -2014,6 +2096,15 @@ local function ConsumeBuffProcs(castName)
             a.pendingConsume = (a.pendingConsume or 0) + 1
             pending = true
         end
+        -- seen only through the Cooldown Manager: count charges down for the
+        -- display (the icon itself says when it's gone)
+        local c = a and a.sources.cdm
+        if c and c.charges and c.charges > 1 and by and not a.sources.aura
+            and (castName == nil or castName ~= proc.buffName)
+            and (now - (a.liveSince or 0)) > 0.25
+            and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName])) then
+            c.charges = c.charges - 1
+        end
     end
     if pending then ResolvePendingConsumes(false) end
     return pending
@@ -2257,6 +2348,13 @@ local function IsActionProcReady(proc)
         end
     end
     if glowActive[name] then usable, how = true, "glow" end
+    -- `anyStance` (Overpower): the ability only works in one stance, so in any
+    -- other the game says "not usable" even right after the dodge. The dodge
+    -- window still counts (switch stance and use it), so alert on it anyway.
+    if usable == false and proc.anyStance and (st.reactUntil or 0) > now
+        and (now - (st.lastCast or -1000)) >= (proc.cooldown or 0) then
+        usable, how = true, how .. ", dodge window (any stance)"
+    end
     if usable == nil then
         usable = (st.reactUntil or 0) > now and (now - (st.lastCast or -1000)) >= (proc.cooldown or 0)
         how = (how and (how .. ", ") or "") .. "react"
@@ -2542,11 +2640,18 @@ end
 -- dropped. How an icon says "active" isn't documented for this client, so
 -- CDM.Active tries several signals and `/procdoc cdm` shows what it finds.
 local CDM = {
-    VIEWERS  = { "BuffIconCooldownViewer", "BuffBarCooldownViewer" },
+    VIEWERS  = { "BuffIconCooldownViewer", "BuffBarCooldownViewer" },                 -- read
+    HIDE     = { "BuffIconCooldownViewer", "BuffBarCooldownViewer",
+                 "EssentialCooldownViewer", "UtilityCooldownViewer" },               -- "Hide its icons"
     byID     = {},                           -- cooldownID -> proc, or false
     live     = {},                           -- procKey -> true while its icon is active
     sawAura  = setmetatable({}, { __mode = "k" }),  -- icon -> true once it had an aura
     goneSince = {},                          -- procKey -> when its icon started saying "not active"
+    stackHow = {},                           -- procKey -> true once its stack source was traced
+    actByID  = {},                           -- cooldownID -> reaction ability, or false
+    actState = {},                           -- procKey -> last traced icon state
+    savedAlpha = {},                         -- viewer name -> its alpha before "Hide its icons"
+    mouseOff = setmetatable({}, { __mode = "k" }),  -- icons whose tooltips we switched off
     GONE_DELAY = 0.5,
     SURE     = { IsActive = true, isActive = true, ["aura gone"] = true },  -- trusted "not active" answers
     elapsed  = 0,
@@ -2640,8 +2745,131 @@ function CDM.Active(f)
     return nil, "unknown"
 end
 
+-- The icon's stack count, when this client lets an addon read it (field or
+-- count text; a blank count on an active icon means 1)
+function CDM.Stacks(f)
+    for _, k in ipairs({ "applications", "auraApplications", "stacks" }) do
+        local v = Clean(f[k])
+        if type(v) == "number" then return v, k end
+    end
+    for _, k in ipairs({ "Applications", "Count", "ChargeCount" }) do
+        local holder = f[k]
+        if type(holder) == "table" then
+            for _, fs in ipairs({ holder, holder.Applications, holder.Text, holder.Count }) do
+                if type(fs) == "table" and type(fs.GetText) == "function" then
+                    local t = Clean(SafeCall(fs.GetText, fs))
+                    if type(t) == "string" then
+                        local n = tonumber(t)
+                        if n then return n, k end
+                        if t == "" then return 1, k .. " (blank)" end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- "Hide its icons" (General): all of Blizzard's Cooldown Manager rows
+-- (Tracked Buffs, Essential and Utility Cooldowns) go invisible but keep
+-- working, so ProcDoc still reads them. Re-applied every poll since Blizzard
+-- resets alpha; their tooltips are switched off out of combat. Switching it
+-- off puts back the opacity they had (never 0: they can be fully transparent
+-- for a moment at login, which isn't their real setting).
+function CDM.ApplyHide()
+    -- left alone (and shown) while Edit Mode is open, so they can be arranged
+    -- and their opacity changed; the new opacity is what comes back later
+    local editing = EditModeManagerFrame
+        and Clean(SafeCall(EditModeManagerFrame.IsShown, EditModeManagerFrame)) == true
+    local hide = G.cdmHideBuffs and not editing and true or false
+    local calm = not (InCombatLockdown and InCombatLockdown())
+    for _, name in ipairs(CDM.HIDE) do
+        local v = _G[name]
+        if type(v) == "table" and type(v.SetAlpha) == "function" then
+            if hide then
+                local alpha = Clean(SafeCall(v.GetAlpha, v))
+                if CDM.savedAlpha[name] == nil then
+                    CDM.savedAlpha[name] = (type(alpha) == "number" and alpha > 0) and alpha or 1
+                end
+                if alpha ~= 0 then SafeCall(v.SetAlpha, v, 0) end
+                if calm and type(v.GetChildren) == "function" then
+                    for _, f in ipairs({ v:GetChildren() }) do
+                        if Clean(SafeCall(f.IsMouseMotionEnabled, f)) == true then
+                            SafeCall(f.SetMouseMotionEnabled, f, false)
+                            CDM.mouseOff[f] = true
+                        end
+                    end
+                end
+            elseif CDM.savedAlpha[name] ~= nil then
+                SafeCall(v.SetAlpha, v, CDM.savedAlpha[name])
+                CDM.savedAlpha[name] = nil
+            end
+        end
+    end
+    if not hide and calm and next(CDM.mouseOff) then
+        for f in pairs(CDM.mouseOff) do SafeCall(f.SetMouseMotionEnabled, f, true) end
+        wipe(CDM.mouseOff)
+    end
+end
+
+-- Reaction abilities (Overpower, Revenge, Riposte...) on the Essential/Utility
+-- rows. Blizzard un-greys and lights an ability's icon when it becomes usable,
+-- even in combat; what an addon can read of that on Forever isn't known yet,
+-- so for now this only records it (trace) and shows it in /procdoc cdm.
+CDM.ACTION_VIEWERS = { "EssentialCooldownViewer", "UtilityCooldownViewer" }
+
+function CDM.ActionFor(cooldownID, f)
+    if not cooldownID then return nil end
+    local cached = CDM.actByID[cooldownID]
+    if cached ~= nil then return cached or nil end
+    local ids, proc = CDM.SpellIDs(cooldownID, f), nil
+    for _, id in ipairs(ids) do
+        local n = GetSpellNameCompat(id)
+        proc = n and actionByName[n] or nil
+        if proc then break end
+    end
+    if #ids > 0 then CDM.actByID[cooldownID] = proc or false end
+    return proc
+end
+
+-- What the icon shows, as readable bits: greyed out, glowing, active, tint
+function CDM.ActionState(f)
+    local function Bit(v) v = Clean(v); return v == nil and "?" or (v and "yes" or "no") end
+    local icon = (type(f.Icon) == "table" and f.Icon) or (type(f.icon) == "table" and f.icon) or nil
+    local desat = icon and SafeCall(icon.IsDesaturated, icon)
+    local glow
+    for _, k in ipairs({ "SpellActivationAlert", "OverlayGlow", "ProcGlow" }) do
+        local gl = f[k]
+        if type(gl) == "table" and type(gl.IsShown) == "function" then glow = SafeCall(gl.IsShown, gl) break end
+    end
+    local active = type(f.IsActive) == "function" and SafeCall(f.IsActive, f) or nil
+    local r, g, b
+    if icon and type(icon.GetVertexColor) == "function" then r, g, b = SafeCall(icon.GetVertexColor, icon) end
+    local tint = (Readable(r) and Readable(g) and Readable(b)) and string.format("%.2f/%.2f/%.2f", r, g, b) or "?"
+    return string.format("greyed=%s glow=%s active=%s tint=%s", Bit(desat), Bit(glow), Bit(active), tint)
+end
+
+function CDM.WatchActions()
+    for _, name in ipairs(CDM.ACTION_VIEWERS) do
+        local v = _G[name]
+        if type(v) == "table" and type(v.GetChildren) == "function" then
+            for _, f in ipairs({ v:GetChildren() }) do
+                local proc = CDM.ActionFor(CDM.CooldownID(f), f)
+                if proc then
+                    local state = CDM.ActionState(f)
+                    if CDM.actState[proc.key] ~= state then
+                        CDM.actState[proc.key] = state
+                        Trace("%s icon on the Cooldown Manager: %s", proc.key, state)
+                    end
+                end
+            end
+        end
+    end
+end
+
 function CDM.Poll()
     local now = GetTime()
+    CDM.ApplyHide()
+    if G.trace and auraLocked then CDM.WatchActions() end
     if not auraLocked then
         if CDM.wasLocked then
             -- buffs readable again: say whether the icons were right, then let the scan rule
@@ -2660,25 +2888,38 @@ function CDM.Poll()
         return
     end
     CDM.wasLocked = true
-    local want, how, gone = {}, {}, {}
+    local want, how, gone, stacks = {}, {}, {}, {}
     for _, f in ipairs(CDM.Items()) do
         local proc = CDM.ProcFor(CDM.CooldownID(f), f)
         if proc and IsProcEnabled(proc) then
             local active, why = CDM.Active(f)
             if active then
                 want[proc.key], how[proc.key] = proc, why
+                local n, from = CDM.Stacks(f)
+                if n then stacks[proc.key] = n end
+                if not CDM.stackHow[proc.key] then
+                    CDM.stackHow[proc.key] = true
+                    Trace("%s stack count from the Cooldown Manager: %s", proc.key,
+                        n and (n .. " via " .. from) or "not readable")
+                end
             elseif active == false and CDM.SURE[why] then
                 gone[proc.key] = gone[proc.key] or { proc = proc, why = why }
             end
         end
     end
     for key, proc in pairs(want) do
-        if not CDM.live[key] then
-            CDM.live[key] = true
+        local info = CDM.live[key]
+        if not info then
             local dur = proc.lastDuration or proc.predictDuration or 10
-            SetLive(proc, "cdm", { exp = now + dur, dur = dur })
+            info = { exp = now + dur, dur = dur, charges = proc.charges }   -- full charges when it appears
+            CDM.live[key] = info
+            info.stacks = stacks[key]
+            SetLive(proc, "cdm", info)
             Trace("%s is up in the Cooldown Manager (%s)", key, how[key])
+        elseif stacks[key] then
+            info.stacks = stacks[key]                                       -- (the alert reads this table)
         end
+        if info.stacks and info.stacks > (proc.maxSeen or 0) then proc.maxSeen = info.stacks end
     end
     for key in pairs(CDM.live) do
         if not want[key] then
@@ -2747,14 +2988,28 @@ function CDM.Tip()
     local offered, answered = CDM.Offered()
     if CDM.Enabled() == false then
         local useful = #offered > 0 or (not answered and #buffProcs > 0)
+        if not useful then return end
         local who = (Clean(SafeCall(UnitName, "player")) or "?") .. "-" .. (Clean(SafeCall(GetRealmName)) or "?")
-        if useful and not ProcDocDB.cdmOffTold[who] then
+        local names = {}
+        for _, p in ipairs(offered) do names[#names + 1] = p.buffName end
+        local what = #names > 0 and ("|cffffd100" .. table.concat(names, ", ") .. "|r") or "your procs"
+        -- "Turn it on for me" (General, on by default): once per character, so
+        -- turning it back off in the game's options sticks
+        if G.cdmAuto and not ProcDocDB.cdmAutoOn[who] then
+            ProcDocDB.cdmAutoOn[who] = true
+            SetCVarCompat("cooldownViewerEnabled", "1")
+            if CDM.Enabled() then
+                Print("turned on Blizzard's Cooldown Manager so ProcDoc can catch " .. what .. " mid-fight" ..
+                    (G.cdmHideBuffs and " (its icons stay hidden; you'll see ProcDoc's alerts)" or "") ..
+                    ". Change this in |cff00ffff/procdoc|r > General.")
+                C_Timer.After(1, GuardedHandler(function() CDM.Tip() end))   -- then what to track
+                return
+            end
+        end
+        if not ProcDocDB.cdmOffTold[who] then
             ProcDocDB.cdmOffTold[who] = true
-            local names = {}
-            for _, p in ipairs(offered) do names[#names + 1] = p.buffName end
             Print("tip: Blizzard's Cooldown Manager is off. The game hides buffs from addons in combat; with it on, " ..
-                "ProcDoc can catch " .. (#names > 0 and ("|cffffd100" .. table.concat(names, ", ") .. "|r") or "your procs") ..
-                " mid-fight. Type |cff00ffff/procdoc cdm on|r to turn it on.")
+                "ProcDoc can catch " .. what .. " mid-fight. Type |cff00ffff/procdoc cdm on|r to turn it on.")
         end
         return
     end
@@ -2830,6 +3085,21 @@ function CDM.Report()
                         Print("icon fields: " .. (#keys > 0 and table.concat(keys, ", ") or "none"))
                         Trace("Cooldown Manager icon fields: %s", table.concat(keys, ", "))
                     end
+                end
+            end
+        end
+    end
+    -- reaction abilities on the cooldown rows, and what ProcDoc can read of them
+    wipe(CDM.actByID)
+    for _, name in ipairs(CDM.ACTION_VIEWERS) do
+        local viewer = _G[name]
+        if type(viewer) == "table" and type(viewer.GetChildren) == "function" then
+            for _, f in ipairs({ viewer:GetChildren() }) do
+                local proc = CDM.ActionFor(CDM.CooldownID(f), f)
+                if proc then
+                    local state = CDM.ActionState(f)
+                    DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s (%s): %s", proc.buffName, name, state))
+                    Trace("%s icon on the Cooldown Manager: %s", proc.key, state)
                 end
             end
         end
@@ -3228,6 +3498,7 @@ local API = {
     VERSION = VERSION,
     IS_FOREVER = IS_FOREVER,
     Remind = Remind,
+    CDM = CDM,
 }
 
 -- Sections 12-13 live inside BuildOptionsModule (run once, right below) so
@@ -3249,8 +3520,8 @@ local function BuildOptionsModule()
         API.StyleAnchors, API.ROTATION_OPTIONS, API.PlaySoundKey, API.TimerFont, API.COLOR_BY_KEY, API.COLOR_CHOICES, API.GetActionProcDuration, API.RemoveListedProc
     local FONT_CHOICES, OUTLINE_CHOICES, SOUND_CHANNELS, SetCVarCompat, ProcDoc_LoadGlobalsFromDB, IMG, DEFAULT_ALERT_TEXTURE, IMAGE_LIST =
         API.FONT_CHOICES, API.OUTLINE_CHOICES, API.SOUND_CHANNELS, API.SetCVarCompat, API.ProcDoc_LoadGlobalsFromDB, API.IMG, API.DEFAULT_ALERT_TEXTURE, API.IMAGE_LIST
-    local IMAGE_SIZE, procByKey, SetOptionsOpen, StopTests, VERSION, IS_FOREVER, Remind =
-        API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER, API.Remind
+    local IMAGE_SIZE, procByKey, SetOptionsOpen, StopTests, VERSION, IS_FOREVER, Remind, CDM =
+        API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER, API.Remind, API.CDM
 
 -- 12) GUI widget helpers (flat, self-contained: no dependency on Blizzard
 --     dropdown/slider templates, which differ between clients)
@@ -4085,6 +4356,19 @@ local function BuildProcPage(parent)
             PSW(pageProc.key).pipColor = (v ~= "gold") and v or nil
             Changed()
         end), 22, nil, 10)
+    S(CreateCheck(child, "One side per stack (for pairs)",
+        function()
+            if not pageProc then return false end
+            local v = PS(pageProc.key).sidesByStacks
+            if v == nil then v = pageProc.sidesByStacks end
+            return v and true or false
+        end,
+        function(v)
+            if not pageProc then return end
+            local default = pageProc.sidesByStacks and true or false
+            if v == default then PSW(pageProc.key).sidesByStacks = nil else PSW(pageProc.key).sidesByStacks = v end
+            Changed()
+        end, "With Both sides on: the first side shows at 1 stack and the second joins at 2."), 16, nil, 10)
     S(CreateCheck(child, "Dots on one side only (for pairs)",
         function() return pageProc and PS(pageProc.key).pipOneSide end,
         function(v)
@@ -4269,6 +4553,43 @@ local function BuildGeneralPage(parent)
             SetCVarCompat("displaySpellActivationOverlays", v and "0" or "1")
         end,
         "Turns off the game's built-in proc art so only ProcDoc's alerts show."), 16, nil, 14)
+
+    -- Cooldown Manager changes settle fully after a reload: offer one
+    local function OfferReload()
+        if InCombatLockdown and InCombatLockdown() then
+            Print("type |cff00ffff/reload|r after combat so this takes full effect.")
+            return
+        end
+        if not (StaticPopupDialogs and StaticPopup_Show) then
+            Print("type |cff00ffff/reload|r so this takes full effect.")
+            return
+        end
+        StaticPopupDialogs.PROCDOC_RELOAD = StaticPopupDialogs.PROCDOC_RELOAD or {
+            text = "ProcDoc: reload your interface now so this change takes full effect?",
+            button1 = "Reload", button2 = "Not now",
+            OnAccept = function()
+                if C_UI and C_UI.Reload then C_UI.Reload() else ReloadUI() end
+            end,
+            timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+        }
+        StaticPopup_Show("PROCDOC_RELOAD")
+    end
+    st:Add(CreateHeader(child, "Blizzard's Cooldown Manager", COL), 18)
+    st:Add(CreateCheck(child, "Turn it on for me",
+        function() return G.cdmAuto end,
+        function(v)
+            G.cdmAuto = v
+            if v then CDM.TurnOn() end
+            OfferReload()
+        end,
+        "The Cooldown Manager can see your buffs in combat, so ProcDoc catches procs mid-fight once they're in its Tracked Buffs. ProcDoc switches it on once per character."), 16, nil, 10)
+    st:Add(CreateCheck(child, "Hide its icons",
+        function() return G.cdmHideBuffs end,
+        function(v)
+            G.cdmHideBuffs = v
+            OfferReload()
+        end,
+        "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts."), 16, nil, 14)
 
     st:Add(CreateHeader(child, "Window & minimap", COL), 18)
     st:Add(CreateCheck(child, "Show minimap button",

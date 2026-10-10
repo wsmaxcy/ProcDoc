@@ -137,7 +137,7 @@ ProcDoc only alerts on **reaction** procs, meaning something just happened that 
 | Class | Built-in procs |
 | --- | --- |
 | Warlock | Shadow Trance (Nightfall) |
-| Mage | Clearcasting |
+| Mage | Clearcasting, Missile Barrage, Fingers of Frost (left side at 1 stack, both sides at 2), Heating Up (with stack dots), Wake of Fire |
 | Druid | Clearcasting, Nature's Grace |
 | Shaman | Clearcasting (Elemental Focus), Flurry |
 | Hunter | Quick Shots, Counterattack, Mongoose Bite |
@@ -149,7 +149,7 @@ Anything Forever adds is caught by **auto-detect** if the game shows its own pro
 
 **About combat:** Forever hides your buffs from addons while you're in combat. ProcDoc still catches the procs it can see coming: **Remorseless Attacks** lights up on your killing blow (an enemy dying at the same moment the buff lands on you, so a party member's kill doesn't set it off), **Enrage** when you take a critical hit, and the reaction abilities when you dodge, parry or block. Other buff procs that start mid-fight appear as soon as combat ends, and any proc that was already up before the fight stays up until it's used or runs out.
 
-**For the most accurate alerts, use Blizzard's Cooldown Manager.** It can see your buffs in combat, so ProcDoc follows it: any proc in its **Tracked Buffs** (Shadow Trance, Clearcasting, Remorseless and more) lights up and clears mid-fight exactly. If it's off, ProcDoc tells you once; type `/procdoc cdm on` to switch it on, then add your procs to Tracked Buffs. `/procdoc cdm` shows what it's tracking.
+**For the most accurate alerts, ProcDoc uses Blizzard's Cooldown Manager.** It can see your buffs in combat, so ProcDoc follows it: any proc in its **Tracked Buffs** (Shadow Trance, Clearcasting, Remorseless, Fingers of Frost and more) lights up and clears mid-fight exactly. ProcDoc switches it on for you (once per character) and keeps the Cooldown Manager's icons invisible (they show while Edit Mode is open), so you only see ProcDoc's alerts. Both are switches in `/procdoc` > General. If a proc isn't in Tracked Buffs yet, ProcDoc tells you once so you can add it. `/procdoc cdm` shows what it's tracking.
 
 ---
 
