@@ -346,6 +346,12 @@ local PROC_DATA = {
             talent           = "Nightfall",
             talentIDs        = { 18094, 18095 }, -- the Cooldown Manager may list the talent
         },
+        {
+            buffName         = "Decimation",      -- empowers Soul Fire
+            alertTexturePath = IMG .. "DemonFireArc.tga",
+            alertStyle       = "TOP",
+            consumedBy       = { "Soul Fire" },
+        },
     },
     ["MAGE"] = {
         {
@@ -380,10 +386,15 @@ local PROC_DATA = {
             dotSlots         = 3,                -- stack dots underneath
         },
         {
-            buffName         = "Wake of Fire",
+            buffName         = "Wake of Fire",    -- next Fire Blast after a kill crits more
             spellIDs         = { 11078 },
             alertTexturePath = IMG .. "FireSwoosh.tga",
             alertStyle       = "LEFT",
+            consumedBy       = { "Fire Blast" },
+            talent           = "Wake of Fire",
+            talentIDs        = { 11078 },
+            predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
+            predictDuration  = 30,
         },
     },
     ["DRUID"] = {
@@ -396,12 +407,19 @@ local PROC_DATA = {
             consumedBy       = "ANY",
         },
         {
-            buffName         = "Nature's Grace",
+            buffName         = "Nature's Grace",  -- 3 sec of faster casting after a spell crit
             spellIDs         = { 16886 },
             texture          = "Interface\\Icons\\Spell_Nature_NaturesBlessing",
             alertTexturePath = IMG .. "GreenVines.tga",
             alertStyle       = "SIDES",
-            consumedBy       = "ANY",
+        },
+        {
+            buffName         = "Eclipse",         -- Wrath speeds up your next Starfires
+            alertTexturePath = IMG .. "StarfallCrescent.tga",
+            alertStyle       = "LEFT",
+            charges          = 4,
+            dotSlots         = 4,                -- up to 4 charges, shown as dots
+            consumedBy       = { "Starfire" },
         },
     },
     ["SHAMAN"] = {
@@ -420,34 +438,59 @@ local PROC_DATA = {
             alertTexturePath = IMG .. "DarkRedStreaks.tga",
             alertStyle       = "SIDES2",
         },
+        {
+            buffName         = "Maelstrom Weapon", -- stacks toward a faster, cheaper Lightning Bolt
+            alertTexturePath = IMG .. "LightningWings.tga",  -- (stack count unknown)
+            -- the art builds with the stacks: lightning stage 1-4, then the wings at 5
+            stackImages      = { IMG .. "LightningStage1.tga", IMG .. "LightningStage2.tga", IMG .. "LightningStage3.tga",
+                                 IMG .. "LightningStage4.tga", IMG .. "LightningWings.tga" },
+            alertStyle       = "BOTTOM",
+            dotSlots         = 5,                -- stacks up to 5, shown as dots
+            consumedBy       = { "Lightning Bolt" },
+        },
     },
     ["HUNTER"] = {
         {
-            buffName         = "Quick Shots",     -- Improved Aspect of the Hawk
+            buffName         = "Quick Shots",     -- Deadly Aspects (was Improved Aspect of the Hawk)
             spellIDs         = { 6150 },
             texture          = "Interface\\Icons\\Ability_Warrior_InnerRage",
             alertTexturePath = IMG .. "GoldenArrows.tga",
             alertStyle       = "SIDES",
         },
+        {
+            buffName         = "Rapid Killing",   -- next Shot after a kill hits harder
+            alertTexturePath = IMG .. "ArrowVolleyArc.tga",
+            alertStyle       = "TOP",
+            consumedBy       = { "Aimed Shot", "Arcane Shot", "Multi-Shot", "Concussive Shot",
+                                 "Scatter Shot", "Sniper Shot", "Tranquilizing Shot" },
+        },
     },
     ["WARRIOR"] = {
         {
+            -- On Forever: a 30% chance after any damaging hit (not every crit), so
+            -- there's no trigger to guess it from in combat
             buffName         = "Enrage",
             spellIDs         = { 12880, 14201, 14202, 14203, 14204 },
             texture          = "Interface\\Icons\\Spell_Shadow_UnholyFrenzy",
             alertTexturePath = IMG .. "BloodOrbs.tga",
             alertStyle       = "SIDES",
-            talent           = "Enrage",
-            talentIDs        = { 12317, 13045, 13046, 13047, 13048 },
-            predictOn        = "CRIT_TAKEN",     -- every crit you take enrages you
-            predictDuration  = 12,
         },
     },
     ["PRIEST"] = {
-        -- No built-in reaction procs on Forever; auto-detect / "Add a proc" cover it.
+        {
+            buffName         = "Searing Light",   -- your next Holy Nova costs no Mana
+            alertTexturePath = IMG .. "HolyFlameArc.tga",
+            alertStyle       = "TOP",
+            consumedBy       = { "Holy Nova" },
+        },
     },
     ["PALADIN"] = {
-        -- No built-in reaction procs on Forever; auto-detect / "Add a proc" cover it.
+        {
+            buffName         = "Infusion of Light", -- faster next Holy Light
+            alertTexturePath = IMG .. "RadiantFeathers.tga",
+            alertStyle       = "TOP",
+            consumedBy       = { "Holy Light" },
+        },
     },
     ["ROGUE"] = {
         {
@@ -461,6 +504,12 @@ local PROC_DATA = {
             talentIDs        = { 14144, 14148 },
             predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
             predictDuration  = 20,
+        },
+        {
+            buffName         = "Cutthroat",       -- your next Ambush doesn't need Stealth
+            alertTexturePath = IMG .. "CrimsonClaws.tga",
+            alertStyle       = "RIGHT",
+            consumedBy       = { "Ambush" },
         },
     },
 }
@@ -509,7 +558,7 @@ local ACTION_PROCS = {
             alertStyle       = "TOP2",
         },
         {
-            buffName         = "Mongoose Bite",   -- after a dodge
+            buffName         = "Mongoose Bite",   -- after a dodge, or Expose Prey (10 sec)
             spellName        = "Mongoose Bite",
             spellID          = 1495,
             reactOn          = { target = { DODGE = true } },
@@ -527,18 +576,19 @@ local ACTION_PROC_DEFAULT_DURATIONS = {
     ["Riposte"]       = 5,
     ["Revenge"]       = 5,
     ["Counterattack"] = 5,
-    ["Mongoose Bite"] = 5,
+    ["Mongoose Bite"] = 10,
 }
 
 -- Every alert image in img/ with its native size, offered in the per-proc
 -- image picker. Generated from the folder: keep it in sync with the files
 -- (a listed file that is missing shows blank).
 local IMAGE_LIST = {
-    { "ArcaneRunes", 256, 128 },          { "AutumnVines", 128, 256 },
-    { "BloodOrbs", 128, 256 },            { "BrightGoldBlade", 128, 256 },
-    { "CrescentMoon", 128, 128 },         { "CrescentMoonGlow", 128, 256 },
-    { "CrimsonClaws", 128, 256 },         { "CrimsonStreakArc", 64, 128 },
-    { "DarkRedStreaks", 128, 256 },       { "DivineRays", 256, 128 },
+    { "ArcaneRunes", 256, 128 },          { "ArrowVolleyArc", 256, 128 },
+    { "AutumnVines", 128, 256 },          { "BloodOrbs", 128, 256 },
+    { "BrightGoldBlade", 128, 256 },      { "CrescentMoon", 128, 128 },
+    { "CrescentMoonGlow", 128, 256 },     { "CrimsonClaws", 128, 256 },
+    { "CrimsonStreakArc", 64, 128 },      { "DarkRedStreaks", 128, 256 },
+    { "DemonFireArc", 256, 128 },         { "DivineRays", 256, 128 },
     { "EmberArc", 128, 256 },             { "EmberCrown", 256, 128 },
     { "FelFlame", 128, 256 },             { "FelOoze", 128, 256 },
     { "FireBand", 256, 128 },             { "FireBurst", 256, 128 },
@@ -551,24 +601,26 @@ local IMAGE_LIST = {
     { "GoldenShield", 128, 256 },         { "GoldenSunArc", 128, 256 },
     { "GoldenSword", 128, 256 },          { "GoldenWingedEmblem", 256, 128 },
     { "GreenGlowArch", 256, 128 },        { "GreenMist", 128, 256 },
-    { "GreenVines", 128, 256 },           { "IceWallArc", 128, 256 },
-    { "IcyBlueArc", 128, 256 },           { "LightningStage1", 256, 128 },
-    { "LightningStage2", 256, 128 },      { "LightningStage3", 256, 128 },
-    { "LightningStage4", 256, 128 },      { "LightningWings", 256, 128 },
-    { "OrangeStreakArc", 128, 256 },      { "PaleGoldBlade", 128, 256 },
-    { "PinkRuneArc", 128, 256 },          { "PurpleComet", 256, 128 },
-    { "PurpleFlameBand", 256, 128 },      { "PurpleThornBand", 256, 128 },
+    { "GreenVines", 128, 256 },           { "HolyFlameArc", 256, 128 },
+    { "IceWallArc", 128, 256 },           { "IcyBlueArc", 128, 256 },
+    { "LightningStage1", 256, 128 },      { "LightningStage2", 256, 128 },
+    { "LightningStage3", 256, 128 },      { "LightningStage4", 256, 128 },
+    { "LightningWings", 256, 128 },       { "OrangeStreakArc", 128, 256 },
+    { "PaleGoldBlade", 128, 256 },        { "PinkRuneArc", 128, 256 },
+    { "PurpleComet", 256, 128 },          { "PurpleFlameBand", 256, 128 },
+    { "PurpleThornBand", 256, 128 },      { "RadiantFeathers", 256, 128 },
     { "RedBoltSlash", 256, 128 },         { "RedFlameCrescent", 128, 256 },
     { "RedShield", 128, 256 },            { "RedSlash", 256, 128 },
     { "RunePlate", 256, 128 },            { "ShadowStar", 128, 256 },
     { "ShadowWisps", 128, 256 },          { "SilverEmblem", 128, 128 },
-    { "SmallRedSlash", 128, 256 },        { "StormArc", 256, 128 },
-    { "StormStones", 256, 128 },          { "SunOrb", 128, 128 },
-    { "WhiteArch", 256, 128 },            { "WhiteArcSoft", 128, 256 },
-    { "WhiteCrescent", 128, 256 },        { "WhiteDoubleArch", 256, 128 },
-    { "WhiteDoubleCrescent", 128, 256 },  { "WhiteFlareArc", 128, 256 },
-    { "WhiteRuneArc", 128, 256 },         { "WhiteSparkArc", 128, 256 },
-    { "WhiteStarburst", 256, 128 },
+    { "SmallRedSlash", 128, 256 },        { "StarfallCrescent", 128, 256 },
+    { "StormArc", 256, 128 },             { "StormStones", 256, 128 },
+    { "StormVortexArc", 256, 128 },       { "SunOrb", 128, 128 },
+    { "VenomDrip", 128, 256 },            { "WhiteArch", 256, 128 },
+    { "WhiteArcSoft", 128, 256 },         { "WhiteCrescent", 128, 256 },
+    { "WhiteDoubleArch", 256, 128 },      { "WhiteDoubleCrescent", 128, 256 },
+    { "WhiteFlareArc", 128, 256 },        { "WhiteRuneArc", 128, 256 },
+    { "WhiteSparkArc", 128, 256 },        { "WhiteStarburst", 256, 128 },
 }
 local IMAGE_SIZE = {}
 for _, e in ipairs(IMAGE_LIST) do
@@ -1175,6 +1227,7 @@ LayoutAlert = function(a)
         ApplyTexCoord(p.tex, flip, isIcon, rot)
         p.flash:SetTexture(img)
         ApplyTexCoord(p.flash, flip, isIcon, rot)
+        a.baseImage, a.curImage = img, img        -- (per-stack art swaps from here; section 5)
         if p.fontKey ~= fontKey then
             p.timer:SetFont(fontPath, fontSize, outline)
             p.fontKey = fontKey
@@ -1489,6 +1542,21 @@ local function OnUpdateHandler(self, elapsed)
             if stacks ~= a.lastStacks then
                 if stacks and stacks > (a.lastStacks or 0) then a.stackGainAt = now end
                 a.lastStacks = stacks
+            end
+            -- Per-stack art (`stackImages`, e.g. Maelstrom Weapon's lightning
+            -- stages), unless the player picked their own image. All images in
+            -- such a set share one size, so only the texture changes.
+            local stackImgs = a.proc.stackImages
+            if stackImgs and not s.image then
+                local n = stacks or (a.live and countSrc and count) or nil
+                local want = n and stackImgs[math.max(1, math.min(#stackImgs, n))] or a.baseImage
+                if want and want ~= a.curImage then
+                    for i = 1, a.numPieces do
+                        a.pieces[i].tex:SetTexture(want)
+                        a.pieces[i].flash:SetTexture(want)
+                    end
+                    a.curImage = want
+                end
             end
             local pr, pg, pb = ColorRGB(s.pipColor or "gold")
             -- one side per stack: a live pair below 2 stacks shows its first side only

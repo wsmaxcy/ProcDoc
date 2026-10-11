@@ -81,7 +81,7 @@ A slim panel docked near the side of the screen, so your alerts stay visible whi
 
 - **Procs tab**: every proc for your class with an on/off checkbox. Click one to open its page (**<** / **>** steps through them). At the bottom, **Add a proc** tracks any buff by name, spell ID, or from your current buffs.
 - **Each proc's page**:
-  - **Preview**, **Image...** (any of the 69 images in `img\`, the spell icon, Blizzard's art, or your own file) and **Reset**.
+  - **Preview**, **Image...** (any of the 76 images in `img\`, the spell icon, Blizzard's art, or your own file) and **Reset**.
   - **Position**: **Snap to** Top, Bottom, Left, Right or Sides (a mirrored left + right pair), then drag to fine-tune. Also Show all to arrange, Reset position, **Both sides**, **Mirror image**, and **Rotation**. *Auto* rotation turns the art to face outward (a snap decides which way); you can also pick 0 / 90 / 180 / 270 degrees.
   - **Look**: size (1.00x = the image's real pixel size, whatever your resolution) and opacity.
   - **Sound**: this proc's sound, or the default.
@@ -109,20 +109,25 @@ A slim panel docked near the side of the screen, so your alerts stay visible whi
 
 ### New ProcDoc art
 
-Eight original images made for ProcDoc in the same glowing style, ready in the image picker:
+Original images made for ProcDoc in the same glowing style, ready in the image picker:
 
 | Image | Shape | Good for |
 | --- | --- | --- |
 | Frost Shards | side | Mage (frost) |
 | Arcane Runes | top | Mage (arcane) |
 | Fel Flame | side | Warlock |
+| Demon Fire Arc | top | Warlock (Decimation, Soul Fire) |
 | Shadow Wisps | side | Warlock, shadow Priest, Rogue |
-| Crimson Claws | side | Rogue, Hunter, feral Druid |
+| Crimson Claws | side | Rogue (Cutthroat), Hunter, feral Druid |
+| Venom Drip | side | Rogue (poisons), Hunter |
 | Storm Arc | top | Shaman |
+| Storm Vortex Arc | top | Shaman |
+| Starfall Crescent | side | Druid (Eclipse) |
 | Divine Rays | top | Paladin, Priest (great for custom procs) |
+| Holy Flame Arc | top | Priest (Searing Light) |
+| Radiant Feathers | top | Paladin (Infusion of Light) |
+| Arrow Volley Arc | top | Hunter (Rapid Killing) |
 | Ember Crown | top | Warrior |
-
-They're made by `tools/procart.py` (Python with numpy, scipy and Pillow), so new themes can be added the same way. Run `tools/sync_images.py` after adding or removing any image so the picker lists exactly what's in `img\`.
 
 ### Using your own images
 
@@ -136,14 +141,15 @@ ProcDoc only alerts on **reaction** procs, meaning something just happened that 
 
 | Class | Built-in procs |
 | --- | --- |
-| Warlock | Shadow Trance (Nightfall) |
-| Mage | Clearcasting, Missile Barrage, Fingers of Frost (left side at 1 stack, both sides at 2), Heating Up (with stack dots), Wake of Fire |
-| Druid | Clearcasting, Nature's Grace |
-| Shaman | Clearcasting (Elemental Focus), Flurry |
-| Hunter | Quick Shots, Counterattack, Mongoose Bite |
-| Warrior | Enrage, Overpower, Revenge |
-| Rogue | Remorseless Attacks, Riposte |
-| Priest / Paladin | None built in. Use auto-detect or **Add a proc** |
+| Warlock | Shadow Trance (Nightfall), Decimation |
+| Mage | Clearcasting, Missile Barrage, Fingers of Frost (left side at 1 stack, both sides at 2), Heating Up (with stack dots), Wake of Fire (lights up on your killing blow) |
+| Druid | Clearcasting, Nature's Grace, Eclipse (with charge dots) |
+| Shaman | Clearcasting (Elemental Focus), Flurry, Maelstrom Weapon (the lightning builds with your stacks: stage 1 to 4, then wings at 5) |
+| Hunter | Quick Shots (Deadly Aspects), Rapid Killing, Counterattack, Mongoose Bite (10 sec window, for Expose Prey) |
+| Warrior | Enrage, Overpower (in any stance), Revenge |
+| Rogue | Remorseless Attacks, Cutthroat, Riposte |
+| Priest | Searing Light (free Holy Nova) |
+| Paladin | Infusion of Light (faster Holy Light) |
 
 Anything Forever adds is caught by **auto-detect** if the game shows its own proc glow for it. Anything else can be added with **Add a proc**.
 
