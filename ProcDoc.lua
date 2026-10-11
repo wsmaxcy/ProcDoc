@@ -2735,7 +2735,7 @@ local CDM = {
     stackHow = {},                           -- procKey -> true once its stack source was traced
     actByID  = {},                           -- cooldownID -> reaction ability, or false
     actState = {},                           -- procKey -> last traced icon state
-    savedAlpha = {},                         -- viewer name -> its alpha before "Hide its icons"
+    origParent = {},                         -- viewer name -> its parent before "Hide its icons"
     mouseOff = setmetatable({}, { __mode = "k" }),  -- icons whose tooltips we switched off
     GONE_DELAY = 0.5,
     SURE     = { IsActive = true, isActive = true, ["aura gone"] = true },  -- trusted "not active" answers
@@ -2855,28 +2855,42 @@ function CDM.Stacks(f)
 end
 
 -- "Hide its icons" (General): all of Blizzard's Cooldown Manager rows
--- (Tracked Buffs, Essential and Utility Cooldowns) go invisible but keep
--- working, so ProcDoc still reads them. Re-applied every poll since Blizzard
--- resets alpha; their tooltips are switched off out of combat. Switching it
--- off puts back the opacity they had (never 0: they can be fully transparent
--- for a moment at login, which isn't their real setting).
+-- (Tracked Buffs, Essential and Utility Cooldowns) are moved into an
+-- invisible holder frame. Blizzard's own opacity and fading are never
+-- touched (the Tracked Buffs row fades itself with your buffs, and setting
+-- its alpha left it stuck invisible), the rows keep updating so ProcDoc
+-- still reads them, and showing them again is just moving them back. Done
+-- out of combat only; their tooltips are switched off while hidden.
+function CDM.Holder()
+    if not CDM.holder then
+        local h = CreateFrame("Frame", "ProcDocHiddenCooldownManager", UIParent)
+        h:SetAllPoints(UIParent)          -- same size and scale, so nothing moves
+        h:SetAlpha(0)
+        h:Show()
+        CDM.holder = h
+    end
+    return CDM.holder
+end
+
 function CDM.ApplyHide()
-    -- left alone (and shown) while Edit Mode is open, so they can be arranged
-    -- and their opacity changed; the new opacity is what comes back later
+    if InCombatLockdown and InCombatLockdown() then return end
+    -- shown again while Edit Mode is open, so they can be arranged
     local editing = EditModeManagerFrame
         and Clean(SafeCall(EditModeManagerFrame.IsShown, EditModeManagerFrame)) == true
     local hide = G.cdmHideBuffs and not editing and true or false
-    local calm = not (InCombatLockdown and InCombatLockdown())
+    if not hide and not CDM.holder then return end              -- never hid anything
+    local holder = CDM.Holder()
     for _, name in ipairs(CDM.HIDE) do
         local v = _G[name]
-        if type(v) == "table" and type(v.SetAlpha) == "function" then
+        if type(v) == "table" and type(v.SetParent) == "function" then
+            local parent = SafeCall(v.GetParent, v)
             if hide then
-                local alpha = Clean(SafeCall(v.GetAlpha, v))
-                if CDM.savedAlpha[name] == nil then
-                    CDM.savedAlpha[name] = (type(alpha) == "number" and alpha > 0) and alpha or 1
+                if parent ~= holder then
+                    CDM.origParent[name] = parent or UIParent
+                    SafeCall(v.SetParent, v, holder)
+                    Trace("Cooldown Manager: %s hidden", name)
                 end
-                if alpha ~= 0 then SafeCall(v.SetAlpha, v, 0) end
-                if calm and type(v.GetChildren) == "function" then
+                if type(v.GetChildren) == "function" then
                     for _, f in ipairs({ v:GetChildren() }) do
                         if Clean(SafeCall(f.IsMouseMotionEnabled, f)) == true then
                             SafeCall(f.SetMouseMotionEnabled, f, false)
@@ -2884,13 +2898,13 @@ function CDM.ApplyHide()
                         end
                     end
                 end
-            elseif CDM.savedAlpha[name] ~= nil then
-                SafeCall(v.SetAlpha, v, CDM.savedAlpha[name])
-                CDM.savedAlpha[name] = nil
+            elseif parent == holder then
+                SafeCall(v.SetParent, v, CDM.origParent[name] or UIParent)
+                Trace("Cooldown Manager: %s shown again", name)
             end
         end
     end
-    if not hide and calm and next(CDM.mouseOff) then
+    if not hide and next(CDM.mouseOff) then
         for f in pairs(CDM.mouseOff) do SafeCall(f.SetMouseMotionEnabled, f, true) end
         wipe(CDM.mouseOff)
     end
@@ -3136,6 +3150,18 @@ function CDM.Report()
     local on = CDM.Enabled()
     Print("Blizzard's Cooldown Manager: " .. ((on == true and "on") or
         (on == false and "|cffff5555off|r (type |cff00ffff/procdoc cdm on|r)") or "unknown"))
+    -- each row: shown by the game?, its own opacity, hidden by ProcDoc?
+    for _, name in ipairs(CDM.HIDE) do
+        local v = _G[name]
+        if type(v) == "table" then
+            local shown, alpha = Clean(SafeCall(v.IsShown, v)), Clean(SafeCall(v.GetAlpha, v))
+            local mine = CDM.holder and SafeCall(v.GetParent, v) == CDM.holder
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s: %s, opacity %s%s", name,
+                (shown == nil and "?") or (shown and "shown") or "hidden by the game",
+                type(alpha) == "number" and string.format("%d%%", math.floor(alpha * 100 + 0.5)) or "?",
+                mine and ", hidden by ProcDoc (General > Hide its icons)" or ""))
+        end
+    end
     for _, name in ipairs(CDM.VIEWERS) do
         local viewer = _G[name]
         if type(viewer) ~= "table" or type(viewer.GetChildren) ~= "function" then
@@ -4680,41 +4706,18 @@ local function BuildGeneralPage(parent)
         end,
         "Turns off the game's built-in proc art so only ProcDoc's alerts show."), 16, nil, 14)
 
-    -- Cooldown Manager changes settle fully after a reload: offer one
-    local function OfferReload()
-        if InCombatLockdown and InCombatLockdown() then
-            Print("type |cff00ffff/reload|r after combat so this takes full effect.")
-            return
-        end
-        if not (StaticPopupDialogs and StaticPopup_Show) then
-            Print("type |cff00ffff/reload|r so this takes full effect.")
-            return
-        end
-        StaticPopupDialogs.PROCDOC_RELOAD = StaticPopupDialogs.PROCDOC_RELOAD or {
-            text = "ProcDoc: reload your interface now so this change takes full effect?",
-            button1 = "Reload", button2 = "Not now",
-            OnAccept = function()
-                if C_UI and C_UI.Reload then C_UI.Reload() else ReloadUI() end
-            end,
-            timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
-        }
-        StaticPopup_Show("PROCDOC_RELOAD")
-    end
+    -- (both take effect right away: no reload needed)
     st:Add(CreateHeader(child, "Blizzard's Cooldown Manager", COL), 18)
     st:Add(CreateCheck(child, "Turn it on for me",
         function() return G.cdmAuto end,
         function(v)
             G.cdmAuto = v
             if v then CDM.TurnOn() end
-            OfferReload()
         end,
         "The Cooldown Manager can see your buffs in combat, so ProcDoc catches procs mid-fight once they're in its Tracked Buffs. ProcDoc switches it on once per character."), 16, nil, 10)
     st:Add(CreateCheck(child, "Hide its icons",
         function() return G.cdmHideBuffs end,
-        function(v)
-            G.cdmHideBuffs = v
-            OfferReload()
-        end,
+        function(v) G.cdmHideBuffs = v end,
         "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts."), 16, nil, 14)
 
     st:Add(CreateHeader(child, "Window & minimap", COL), 18)
