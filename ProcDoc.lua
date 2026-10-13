@@ -727,7 +727,9 @@ end
 
 local function IsProcEnabled(proc)
     if proc.auto and not G.autoDetect then return false end
-    return PS(proc.key).enabled ~= false
+    local e = PS(proc.key).enabled
+    if proc.defaultOff then return e == true end   -- listed from the Cooldown Manager: off until ticked
+    return e ~= false
 end
 
 -- Reminders: a buff set to "remind me when it's missing" (per-proc setting
@@ -1702,6 +1704,8 @@ local function MakeCustomProc(key, info)
     }
 end
 
+local SyncCatalog  -- forward (section 9): lists the Cooldown Manager's spells
+
 local function BuildClassProcs()
     wipe(classProcs); wipe(buffProcs); wipe(actionProcs)
     wipe(procByKey); wipe(buffBySpellID); wipe(buffByName); wipe(actionByName)
@@ -1747,6 +1751,7 @@ local function BuildClassProcs()
         end
     end
     hasActionProcs = #actionProcs > 0
+    if SyncCatalog then SyncCatalog() end
 end
 
 -- Track any buff as a proc: a spell ID (number or numeric text) or an exact
@@ -1906,7 +1911,20 @@ local function MakeAuraInfo(proc, count, duration, expirationTime, instanceID, n
         info.inst = instanceID
         procByInstance[instanceID] = proc.key
     end
-    info.charges = (proc.charges and stacks > 0 and stacks) or proc.charges or 1
+    -- Charges left. Procs with `charges` (each cast spends one: Fingers of
+    -- Frost, Eclipse) count their stacks when readable, and a buff showing no
+    -- stack count is a single charge (Fingers of Frost with 1 talent point);
+    -- the data's number is only for when it can't be read. The most seen is
+    -- remembered for when the proc appears through the Cooldown Manager.
+    -- Anything else is spent whole by one cast, stacks or not.
+    if not proc.charges then
+        info.charges = 1
+    elseif Readable(count) then
+        info.charges = math.max(stacks, 1)
+        proc.chargesSeen = math.max(proc.chargesSeen or 0, info.charges)
+    else
+        info.charges = proc.charges
+    end
     return info
 end
 
@@ -2255,12 +2273,19 @@ function Predict.ResetTalents()
     for _, proc in ipairs(buffProcs) do proc.hasTalent = nil end
 end
 
+-- The standard: when Blizzard's Cooldown Manager is watching a proc, it's the
+-- only thing ProcDoc goes by in combat, so no guessing for that proc
+-- (Predict.IsWatched is set by the Cooldown Manager code, section 9).
 function Predict.Run(trigger, why)
     local list
     for _, proc in ipairs(buffProcs) do
         if proc.predictOn == trigger and IsProcEnabled(proc) and Predict.HasTalent(proc) then
-            list = list or {}
-            list[#list + 1] = proc
+            if Predict.IsWatched and Predict.IsWatched(proc) then
+                Trace("%s: left to the Cooldown Manager (no guessing)", proc.key)
+            else
+                list = list or {}
+                list[#list + 1] = proc
+            end
         end
     end
     if not list then return end
@@ -3010,7 +3035,8 @@ function CDM.Poll()
         local info = CDM.live[key]
         if not info then
             local dur = proc.lastDuration or proc.predictDuration or 10
-            info = { exp = now + dur, dur = dur, charges = proc.charges }   -- full charges when it appears
+            -- full charges when it appears (as many as it has had for this player)
+            info = { exp = now + dur, dur = dur, charges = proc.chargesSeen or proc.charges }
             CDM.live[key] = info
             info.stacks = stacks[key]
             SetLive(proc, "cdm", info)
@@ -3077,6 +3103,73 @@ function CDM.Offered()
         end
     end
     return out, answered
+end
+
+-- Is one of the Cooldown Manager's buff icons watching this proc? (The
+-- standard: then that icon is all ProcDoc goes by in combat; see Predict.Run.)
+Predict.IsWatched = function(proc)
+    for _, f in ipairs(CDM.Items()) do
+        if CDM.ProcFor(CDM.CooldownID(f), f) == proc then return true end
+    end
+    return false
+end
+
+-- Every spell in the class's Cooldown Manager lists, offered in ProcDoc's list
+-- switched off (key "CDM:<spellID>"): buffs from Tracked Buffs and Tracked
+-- Bars light up while active, abilities from Essential and Utility light up
+-- when ready to use. Spells ProcDoc already has (built in or added by the
+-- player) keep their own entries. Only spells the character knows are listed.
+function CDM.CatalogEntries()
+    local api, cats = C_CooldownViewer, Enum and Enum.CooldownViewerCategory
+    local out = {}
+    if not (api and api.GetCooldownViewerCategorySet and cats) then return out end
+    for _, spec in ipairs({ { cats.TrackedBuff, false }, { cats.TrackedBar, false },
+                            { cats.Essential, true }, { cats.Utility, true } }) do
+        local ids = spec[1] and Clean(SafeCall(api.GetCooldownViewerCategorySet, spec[1]))
+        if type(ids) == "table" then
+            for _, cid in ipairs(ids) do
+                cid = Clean(cid)
+                local spellIDs = cid and CDM.SpellIDs(cid) or {}
+                local name = spellIDs[1] and GetSpellNameCompat(spellIDs[1])
+                if name then out[#out + 1] = { id = spellIDs[1], ids = spellIDs, name = name, ability = spec[2] } end
+            end
+        end
+    end
+    return out
+end
+
+SyncCatalog = function()
+    if not initialized then return end
+    local added = 0
+    for _, e in ipairs(CDM.CatalogEntries()) do
+        local key = "CDM:" .. e.id
+        local taken = procByKey[key] or buffByName[e.name] or actionByName[e.name]
+        for _, sid in ipairs(e.ids) do
+            taken = taken or buffBySpellID[sid]
+            for _, p in ipairs(buffProcs) do
+                for _, t in ipairs(p.talentIDs or {}) do
+                    if t == sid then taken = p end                    -- e.g. Nightfall -> Shadow Trance
+                end
+            end
+        end
+        if not taken then
+            local proc = { key = key, buffName = e.name, alertTexturePath = DEFAULT_ALERT_TEXTURE,
+                           alertStyle = "TOP", cdm = true, defaultOff = true }
+            if e.ability then
+                proc.spellName, proc.spellID = e.name, e.id
+            else
+                proc.spellIDs = e.ids
+            end
+            RegisterProc(proc, e.ability)
+            added = added + 1
+        end
+    end
+    if added > 0 then
+        hasActionProcs = #actionProcs > 0
+        wipe(CDM.byID); wipe(CDM.actByID)
+        Trace("listed %d spell(s) from the Cooldown Manager", added)
+        if RefreshOptions then RefreshOptions(true) end
+    end
 end
 
 -- One-time tips after login. If the Cooldown Manager is off: say so once per
@@ -3219,9 +3312,17 @@ end
 
 do
 local cdmFrame = CreateFrame("Frame", "ProcDocCooldownManagerFrame", UIParent)
-SafeRegister(cdmFrame, "PLAYER_ENTERING_WORLD")
-cdmFrame:SetScript("OnEvent", GuardedHandler(function()
-    C_Timer.After(5, GuardedHandler(function() if initialized then CDM.Tip() end end))
+for _, ev in ipairs({ "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_TALENT_UPDATE", "CHARACTER_POINTS_CHANGED" }) do
+    SafeRegister(cdmFrame, ev)
+end
+cdmFrame:SetScript("OnEvent", GuardedHandler(function(self, event)
+    if event == "PLAYER_ENTERING_WORLD" then
+        C_Timer.After(3, GuardedHandler(function() SyncCatalog() end))
+        C_Timer.After(5, GuardedHandler(function() if initialized then CDM.Tip() end end))
+    elseif not CDM.syncPending then                               -- new spells or talents: list them
+        CDM.syncPending = true
+        C_Timer.After(1, GuardedHandler(function() CDM.syncPending = false; SyncCatalog() end))
+    end
 end))
 cdmFrame:SetScript("OnUpdate", GuardedHandler(function(self, dt)
     CDM.elapsed = CDM.elapsed + dt
@@ -3907,8 +4008,22 @@ local function PreviewAfterChange(proc)
     end
 end
 
+-- Turns a proc on or off. Spells listed from the Cooldown Manager start off,
+-- so for them "on" is what gets saved; for everything else, "off" is.
+local function SetProcEnabled(proc, v)
+    if proc.defaultOff then
+        if v then PSW(proc.key).enabled = true else PSW(proc.key).enabled = nil end
+    else
+        if v then PSW(proc.key).enabled = nil else PSW(proc.key).enabled = false end
+    end
+end
+
 local function ProcKindText(proc)
     if Remind.Is(proc) then return "Reminder: shows when " .. proc.buffName .. " is missing" end
+    if proc.cdm then
+        return "From Blizzard's Cooldown Manager: lights up " .. (proc.isAction
+            and ("when " .. (proc.localName or proc.spellName) .. " is ready to use") or ("while you have " .. proc.buffName))
+    end
     if proc.auto then return "Detected from Blizzard's proc overlay" end
     if proc.isAction and proc.custom then
         return "Your own ability: lights up when " .. (proc.localName or proc.spellName) .. " is ready to use"
@@ -4041,7 +4156,7 @@ local function CreateListRow(parent)
         function() return row.proc and IsProcEnabled(row.proc) end,
         function(v)
             if not row.proc then return end
-            if v then PSW(row.proc.key).enabled = nil else PSW(row.proc.key).enabled = false end
+            SetProcEnabled(row.proc, v)
             if not v then
                 local a = alerts[row.proc.key]
                 if a then a.test = false end
@@ -4083,7 +4198,17 @@ local function BindListRow(row, proc)
     local enabled = IsProcEnabled(proc)
     row.name:SetAlpha(enabled and 1 or 0.45)
     row.icon:SetDesaturated(not enabled)
-    row.tag:SetText(proc.auto and "auto" or (proc.custom and "custom" or (proc.isAction and "react" or "")))
+    local tag = ""
+    if proc.cdm then
+        tag = proc.isAction and "ready" or "buff"
+    elseif proc.auto then
+        tag = "auto"
+    elseif proc.custom then
+        tag = "custom"
+    elseif proc.isAction then
+        tag = "react"
+    end
+    row.tag:SetText(tag)
     row.check:Refresh()
     row:Show()
 end
@@ -4125,16 +4250,29 @@ local function RebuildProcList()
 
     local className = UnitClass("player") or playerClass or ""
     Header(string.upper(className) .. " PROCS")
-    local anyAuto = false
+    local anyAuto, listed, own = false, {}, 0
     for _, proc in ipairs(classProcs) do
-        if proc.auto then anyAuto = true else Row(proc) end
+        if proc.auto then
+            anyAuto = true
+        elseif proc.cdm then
+            listed[#listed + 1] = proc
+        else
+            Row(proc)
+            own = own + 1
+        end
     end
-    if #classProcs == 0 then Header("None built in. Auto-detect will add them.") end
+    if own == 0 then Header("None built in. Auto-detect will add them.") end
     if anyAuto then
         Header("AUTO-DETECTED")
         for _, proc in ipairs(classProcs) do
             if proc.auto then Row(proc) end
         end
+    end
+    -- every other spell in Blizzard's Cooldown Manager, off until ticked
+    if #listed > 0 then
+        table.sort(listed, function(a, b) return a.buffName < b.buffName end)
+        Header("FROM BLIZZARD'S COOLDOWN MANAGER (tick to turn on)")
+        for _, proc in ipairs(listed) do Row(proc) end
     end
     Header("Click a proc to customise it.")
 
@@ -4251,7 +4389,7 @@ local function BuildProcPage(parent)
         function() return pageProc and IsProcEnabled(pageProc) end,
         function(v)
             if not pageProc then return end
-            if v then PSW(pageProc.key).enabled = nil else PSW(pageProc.key).enabled = false end
+            SetProcEnabled(pageProc, v)
             ReevaluateAll()
         end)
     enable:SetPoint("BOTTOMLEFT", box, "BOTTOMRIGHT", 12, 2)
