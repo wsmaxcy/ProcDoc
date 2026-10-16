@@ -1680,10 +1680,11 @@ local function MakeDetectedProc(spellID, info)
     }
 end
 
--- A proc the player added: a buff, or (kind "ability") an ability that lights
--- up whenever it's ready to use, like the built-in reaction abilities
+-- A proc the player added: a buff, or an ability that lights up whenever it's
+-- ready to use (kind "ability", like the built-in reaction abilities) or when
+-- it comes off cooldown (kind "cooldown")
 local function MakeCustomProc(key, info)
-    if info.kind == "ability" then
+    if info.kind == "ability" or info.kind == "cooldown" then
         return {
             key              = key,
             buffName         = info.name,
@@ -1692,6 +1693,7 @@ local function MakeCustomProc(key, info)
             alertTexturePath = DEFAULT_ALERT_TEXTURE,
             alertStyle       = "TOP",
             custom           = true,
+            cdOnly           = info.kind == "cooldown" or nil,
         }
     end
     return {
@@ -1716,7 +1718,7 @@ local function BuildClassProcs()
     if custom then
         local merged = {}
         for key, info in pairs(custom) do
-            local builtin = info.kind ~= "ability"
+            local builtin = not info.kind
                 and ((info.spellID and buffBySpellID[info.spellID]) or (info.name and buffByName[info.name]))
             if builtin and not builtin.custom and not builtin.auto then
                 -- a buff the player added that's now built in: keep their look
@@ -1736,7 +1738,7 @@ local function BuildClassProcs()
                 custom[key] = nil
                 merged[#merged + 1] = builtin.buffName
             elseif not procByKey[key] then
-                RegisterProc(MakeCustomProc(key, info), info.kind == "ability")
+                RegisterProc(MakeCustomProc(key, info), info.kind ~= nil)
             end
         end
         if #merged > 0 then
@@ -2423,7 +2425,8 @@ local function RebuildActionSlots()
 end
 
 -- How long a reaction alert stays up; nil = until the ability is used (or
--- stops being usable). A saved 0 means exactly that.
+-- stops being usable). A saved 0 means exactly that. (Cooldown alerts last
+-- as long as the cooldown.)
 local function GetActionProcDuration(proc)
     local d = PS(proc.key).duration
     if d == 0 then return nil end
@@ -2431,32 +2434,94 @@ local function GetActionProcDuration(proc)
     return ACTION_PROC_DEFAULT_DURATIONS[proc.spellName or ""]
 end
 
--- Returns ready, how (a short note for the trace). Usability comes from the
--- action bar slot or the spell API; if Forever hides both (secret in combat),
--- fall back to the dodge/parry/block we saw (UNIT_COMBAT, `reactOn`) within
--- the reaction window, and not within the ability's own cooldown after a cast.
+local IconState  -- forward (section 9): what the ability's Cooldown Manager icon shows
+
+-- Is the ability on a real cooldown (the global cooldown doesn't count)?
+-- Returns true / false and how, or nil when nothing can tell; when on
+-- cooldown, also when it ends and how long it is (for the countdown).
+-- The game's cooldown first. When that's hidden in combat: our own count
+-- from the last cast and how long its cooldown was when we could read it
+-- (exact for a fixed cooldown like Kick's); only without a cast to count
+-- from, the ability's icon on the Cooldown Manager (greyed while on
+-- cooldown; no times, and right after a cast it can still say "ready" for a
+-- moment, so it's the last resort).
+local function SpellOnCooldown(proc, st, now)
+    local start, duration = GetSpellCooldownCompat(proc.localName)
+    if Readable(start) and Readable(duration) and start and duration then
+        local left = (start > 0 and duration > 1.5) and (start + duration - now) or 0
+        if left > 0.1 then
+            proc.cdLength = duration
+            return true, "cooldown", start + duration, duration
+        end
+        return false, "cooldown"
+    end
+    local len = proc.cdLength
+    if not len then
+        local base = Clean(SafeCall(_G.GetSpellBaseCooldown, proc.spellID or proc.localName))
+        len = (type(base) == "number" and base > 1500) and base / 1000 or nil
+    end
+    if len and st.lastCast then
+        local ends = st.lastCast + len
+        if now < ends then return true, "since cast", ends, len end
+        return false, "since cast"
+    end
+    local icon = IconState and IconState(proc)
+    if icon ~= nil then return icon, "cooldown icon" end
+    return nil, "cooldown unknown"
+end
+
+-- Returns ready, how (a short note for the trace).
+-- Abilities you cast (your own and the Cooldown Manager's, not the built-in
+-- reactions) follow their Cooldown Manager icon, in and out of combat:
+--   "available" (default for abilities without a cooldown): the alert shows
+--     while the ability is off cooldown and usable. Being short of
+--     energy/rage/mana for a moment still counts as available (otherwise
+--     Kick would flash every time you spend energy).
+--   "on cooldown" (`cdOnly`, default for abilities with one): the alert shows
+--     while it's on cooldown, counting down until it's back (st.cdEnds and
+--     st.cdLength feed the countdown).
+-- Usability comes from the action bar slot or the spell API, then the
+-- icon's tint; for the built-in reactions, if Forever hides those, the
+-- dodge/parry/block we saw (UNIT_COMBAT, `reactOn`) within the reaction
+-- window. Then not on cooldown (SpellOnCooldown).
 local function IsActionProcReady(proc)
     local name = proc.localName
     if not name then return false, "unknown spell" end
     local st = actionState[proc.key] or {}
     local now = GetTime()
-    local usable, how
+    local castable = proc.custom or proc.cdm
+    if proc.cdOnly then
+        local on, how, ends, len = SpellOnCooldown(proc, st, now)
+        st.cdEnds, st.cdLength = on and ends or nil, on and len or nil
+        if on then return true, "on cooldown (" .. how .. ")" end
+        return false, on == nil and how or "off cooldown"
+    end
+    local usable, how, noPower
     local slot = actionSlotByName[name]
     if slot and IsUsableAction then
-        local u = SafeCall(IsUsableAction, slot)
+        local u, nm = SafeCall(IsUsableAction, slot)
         if issecret(u) then
             how = "bar:secret"
         elseif u ~= nil then
-            usable, how = u and true or false, "bar"
+            usable, how, noPower = u and true or false, "bar", Clean(nm)
         end
     end
     if usable == nil then
-        local u = IsSpellUsableCompat(name)
+        local u, np = IsSpellUsableCompat(name)
         if issecret(u) then
             how = (how and (how .. ", ") or "") .. "spell:secret"
         elseif u ~= nil then
-            usable, how = u and true or false, "spell"
+            usable, how, noPower = u and true or false, "spell", Clean(np)
         end
+    end
+    if usable == nil and castable and IconState then
+        local _, tint = IconState(proc)                     -- the icon's tint, readable in combat
+        if tint then
+            usable, how = tint ~= "unusable", (how and (how .. ", ") or "") .. "icon:" .. tint
+        end
+    end
+    if usable == false and noPower == true and castable then
+        usable, how = true, how .. ", short of power"
     end
     if glowActive[name] then usable, how = true, "glow" end
     -- `anyStance` (Overpower): the ability only works in one stance, so in any
@@ -2472,11 +2537,8 @@ local function IsActionProcReady(proc)
     end
     if not usable then return false, how end
 
-    local start, duration = GetSpellCooldownCompat(name)
-    if Readable(start) and Readable(duration) and start and duration
-        and duration > 1.5 and start > 0 and (start + duration - now) > 0.1 then
-        return false, how .. ", cooldown"
-    end
+    local onCooldown, cdHow = SpellOnCooldown(proc, st, now)
+    if onCooldown then return false, how .. ", " .. cdHow end
     return true, how
 end
 
@@ -2498,8 +2560,19 @@ local function CheckActionProc(proc)
     if ready then
         if not st.active and not st.suppressed then
             st.active = true
-            local dur = GetActionProcDuration(proc)
-            SetLive(proc, "action", { exp = dur and (GetTime() + dur), dur = dur })
+            local info
+            if proc.cdOnly then
+                info = { exp = st.cdEnds, dur = st.cdLength }        -- counts down to when it's back
+            else
+                local dur = GetActionProcDuration(proc)
+                info = { exp = dur and (GetTime() + dur), dur = dur }
+            end
+            st.shownEnds = info.exp
+            SetLive(proc, "action", info)
+        elseif st.active and proc.cdOnly and math.abs((st.cdEnds or -1) - (st.shownEnds or -1)) > 0.05 then
+            -- a better reading of when it's back (the game's own after combat): move the countdown
+            st.shownEnds = st.cdEnds
+            SetLive(proc, "action", { exp = st.cdEnds, dur = st.cdLength })
         end
     else
         st.suppressed = false
@@ -2688,7 +2761,11 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
                 local st = actionState[proc.key] or {}
                 actionState[proc.key] = st
                 st.lastCast, st.reactUntil = GetTime(), nil
-                if st.active then ExpireActionProc(proc) end
+                if proc.cdOnly then
+                    st.suppressed = false                    -- a cast starts the cooldown countdown
+                elseif st.active then
+                    ExpireActionProc(proc)
+                end
             end
         end
         CheckAllActionProcs()
@@ -2942,10 +3019,11 @@ function CDM.ApplyHide()
     end
 end
 
--- Reaction abilities (Overpower, Revenge, Riposte...) on the Essential/Utility
--- rows. Blizzard un-greys and lights an ability's icon when it becomes usable,
--- even in combat; what an addon can read of that on Forever isn't known yet,
--- so for now this only records it (trace) and shows it in /procdoc cdm.
+-- Abilities on the Essential/Utility rows. Blizzard greys an ability's icon
+-- while it's on cooldown and tints it when it's short of power or out of
+-- range, even in combat; ability alerts read it (IconState) when the game
+-- hides the ability's own state, and it's recorded (trace) and shown in
+-- /procdoc cdm.
 CDM.ACTION_VIEWERS = { "EssentialCooldownViewer", "UtilityCooldownViewer" }
 
 function CDM.ActionFor(cooldownID, f)
@@ -2977,6 +3055,41 @@ function CDM.ActionState(f)
     if icon and type(icon.GetVertexColor) == "function" then r, g, b = SafeCall(icon.GetVertexColor, icon) end
     local tint = (Readable(r) and Readable(g) and Readable(b)) and string.format("%.2f/%.2f/%.2f", r, g, b) or "?"
     return string.format("greyed=%s glow=%s active=%s tint=%s", Bit(desat), Bit(glow), Bit(active), tint)
+end
+
+-- The ability's icon on the Essential/Utility rows, as Blizzard draws it:
+-- greyed while on cooldown, tinted when it can't be used right now (blue:
+-- short of power, red: out of range, dim: not usable). Returns onCooldown
+-- (true / false, or nil when Forever hides it, as it does in combat once the
+-- cooldown changes) and the tint, "usable" / "power" / "range" / "unusable"
+-- (readable in combat). Nothing when the ability has no icon there.
+IconState = function(proc)
+    for _, name in ipairs(CDM.ACTION_VIEWERS) do
+        local v = _G[name]
+        if type(v) == "table" and type(v.GetChildren) == "function" and Clean(SafeCall(v.IsShown, v)) then
+            for _, f in ipairs({ v:GetChildren() }) do
+                if CDM.ActionFor(CDM.CooldownID(f), f) == proc then
+                    local icon = type(f.Icon) == "table" and f.Icon or nil
+                    local on = Clean(f.isOnActualCooldown)
+                    if type(on) ~= "boolean" then
+                        on = icon and Clean(SafeCall(icon.IsDesaturated, icon))
+                        if type(on) ~= "boolean" then on = nil end
+                    end
+                    local tint
+                    if icon and type(icon.GetVertexColor) == "function" then
+                        local r, g, b = SafeCall(icon.GetVertexColor, icon)
+                        r, g, b = Clean(r), Clean(g), Clean(b)
+                        if type(r) == "number" and type(g) == "number" and type(b) == "number" then
+                            tint = (r > 0.9 and g > 0.9 and b > 0.9 and "usable")
+                                or (b > 0.9 and r < 0.7 and "power")
+                                or (r > g + 0.3 and "range") or "unusable"
+                        end
+                    end
+                    return on, tint
+                end
+            end
+        end
+    end
 end
 
 function CDM.WatchActions()
@@ -3282,11 +3395,33 @@ Predict.IsWatched = function(proc)
     return false
 end
 
+-- What a listed spell's alert follows unless the player picks otherwise:
+--   "up"       a buff on you: lights up while you have it
+--   "cooldown" an ability with a cooldown (Kick): shows while it's on
+--              cooldown, counting down until it's back
+--   "ready"    an ability without one (Rupture): lights up while it's
+--              available (usable)
+-- The Essential and Utility rows are abilities with cooldowns. A buff-list
+-- spell that lands on your target (Rupture, Garrote, Sap...) is never a
+-- buff you have, so it's an ability too, unless it's a passive talent effect.
+function CDM.DefaultKind(cid, spellID, fromCooldownRow)
+    local ability = fromCooldownRow
+    if not ability then
+        local info = Clean(SafeCall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cid))
+        local passive = Clean(SafeCall(C_Spell and C_Spell.IsSpellPassive, spellID))
+        ability = type(info) == "table" and Clean(info.selfAura) == false and passive ~= true
+    end
+    if not ability then return "up" end
+    local base = Clean(SafeCall(_G.GetSpellBaseCooldown, spellID))
+    if type(base) == "number" then return base > 1500 and "cooldown" or "ready" end
+    return fromCooldownRow and "cooldown" or "ready"
+end
+
 -- Every spell in the class's Cooldown Manager lists, offered in ProcDoc's list
--- switched off (key "CDM:<spellID>"): buffs from Tracked Buffs and Tracked
--- Bars light up while active, abilities from Essential and Utility light up
--- when ready to use. Spells ProcDoc already has (built in or added by the
--- player) keep their own entries. Only spells the character knows are listed.
+-- switched off (key "CDM:<spellID>"), each with a sensible default for what
+-- its alert follows (CDM.DefaultKind; the player can change it on its page).
+-- Spells ProcDoc already has (built in or added by the player) keep their own
+-- entries. Only spells the character knows are listed.
 function CDM.CatalogEntries()
     local api, cats = C_CooldownViewer, Enum and Enum.CooldownViewerCategory
     local out = {}
@@ -3299,7 +3434,10 @@ function CDM.CatalogEntries()
                 cid = Clean(cid)
                 local spellIDs = cid and CDM.SpellIDs(cid) or {}
                 local name = spellIDs[1] and GetSpellNameCompat(spellIDs[1])
-                if name then out[#out + 1] = { id = spellIDs[1], ids = spellIDs, name = name, ability = spec[2] } end
+                if name then
+                    out[#out + 1] = { id = spellIDs[1], ids = spellIDs, name = name,
+                                      kind = CDM.DefaultKind(cid, spellIDs[1], spec[2]) }
+                end
             end
         end
     end
@@ -3323,12 +3461,14 @@ SyncCatalog = function()
         if not taken then
             local proc = { key = key, buffName = e.name, alertTexturePath = DEFAULT_ALERT_TEXTURE,
                            alertStyle = "TOP", cdm = true, defaultOff = true }
-            if e.ability then
-                proc.spellName, proc.spellID = e.name, e.id
+            local kind = PS(key).kind or e.kind                       -- the player's pick, else the default
+            local ability = kind == "ready" or kind == "cooldown"
+            if ability then
+                proc.spellName, proc.spellID, proc.cdOnly = e.name, e.id, kind == "cooldown" or nil
             else
                 proc.spellIDs = e.ids
             end
-            RegisterProc(proc, e.ability)
+            RegisterProc(proc, ability)
             added = added + 1
         end
     end
@@ -3909,12 +4049,19 @@ local API = {
     IS_FOREVER = IS_FOREVER,
     Remind = Remind,
     CDM = CDM,
-    -- Switches a proc the player added between a buff and an ability ("ready
-    -- to use"). It's rebuilt as a new proc, so its old alert is dropped.
-    SetCustomKind = function(key, ability)
+    -- Switches a proc the player added, or one listed from the Cooldown
+    -- Manager, between a buff ("buff") and an ability that lights up when
+    -- it's ready to use ("ready") or comes off cooldown ("cooldown"). It's
+    -- rebuilt as a new proc, so its old alert is dropped.
+    SetKind = function(key, kind)
         local info = ProcDocDB.custom[playerClass] and ProcDocDB.custom[playerClass][key]
-        if not info then return end
-        if ability then info.kind = "ability" else info.kind = nil end
+        if info then
+            info.kind = (kind == "ready" and "ability") or (kind == "cooldown" and "cooldown") or nil
+        elseif procByKey[key] and procByKey[key].cdm then
+            PSW(key).kind = kind
+        else
+            return
+        end
         local a = alerts[key]
         if a then
             for _, p in ipairs(a.pieces) do p:Hide() end
@@ -3948,7 +4095,7 @@ local function BuildOptionsModule()
         API.FONT_CHOICES, API.OUTLINE_CHOICES, API.SOUND_CHANNELS, API.SetCVarCompat, API.ProcDoc_LoadGlobalsFromDB, API.IMG, API.DEFAULT_ALERT_TEXTURE, API.IMAGE_LIST
     local IMAGE_SIZE, procByKey, SetOptionsOpen, StopTests, VERSION, IS_FOREVER, Remind, CDM =
         API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER, API.Remind, API.CDM
-    local SetCustomKind = API.SetCustomKind
+    local SetKind = API.SetKind
 
 -- 12) GUI widget helpers (flat, self-contained: no dependency on Blizzard
 --     dropdown/slider templates, which differ between clients)
@@ -4218,14 +4365,14 @@ end
 
 local function ProcKindText(proc)
     if Remind.Is(proc) then return "Reminder: shows when " .. proc.buffName .. " is missing" end
+    local spell = proc.localName or proc.spellName
+    local when = proc.isAction and (proc.cdOnly and ("while " .. tostring(spell) .. " is on cooldown, counting down until it's back")
+        or ("while " .. tostring(spell) .. " is available (off cooldown and usable)"))
     if proc.cdm then
-        return "From Blizzard's Cooldown Manager: lights up " .. (proc.isAction
-            and ("when " .. (proc.localName or proc.spellName) .. " is ready to use") or ("while you have " .. proc.buffName))
+        return "From Blizzard's Cooldown Manager: lights up " .. (when or ("while you have " .. proc.buffName))
     end
     if proc.auto then return "Detected from Blizzard's proc overlay" end
-    if proc.isAction and proc.custom then
-        return "Your own ability: lights up when " .. (proc.localName or proc.spellName) .. " is ready to use"
-    end
+    if proc.isAction and proc.custom then return "Your own ability: lights up " .. when end
     if proc.custom then return "Your own buff proc" .. (proc.spellID and (" (spell " .. proc.spellID .. ")") or "") end
     if proc.isAction then
         return "Reaction ability: lights up when " .. (proc.localName or proc.spellName) .. " becomes usable"
@@ -4398,7 +4545,7 @@ local function BindListRow(row, proc)
     row.icon:SetDesaturated(not enabled)
     local tag = ""
     if proc.cdm then
-        tag = proc.isAction and "ready" or "buff"
+        tag = proc.isAction and (proc.cdOnly and "cooldown" or "ready") or "buff"
     elseif proc.auto then
         tag = "auto"
     elseif proc.custom then
@@ -4764,32 +4911,42 @@ local function BuildProcPage(parent)
     -- Buff procs get a Stacks section; reaction abilities get the reaction
     -- window slider in the same spot (BindProcPage shows the one that fits).
     -- What the alert follows: the buff showing up (a proc), the buff missing
-    -- (a reminder), or, for procs the player added, the ability being ready to
-    -- use (it then works like the reaction abilities). Built-in reaction
-    -- abilities only have the one choice.
+    -- (a reminder), or, for spells the player casts (their own procs and the
+    -- Cooldown Manager's), the ability being ready to use or coming off
+    -- cooldown (it then works like the reaction abilities). Built-in procs
+    -- keep what they are: buffs can be a reminder, reaction abilities have
+    -- the one choice.
+    local function Castable(p)
+        if not (p.custom or p.cdm) then return false end
+        local id = p.spellID or (p.spellIDs and p.spellIDs[1])
+        return not (id and Clean(SafeCall(C_Spell and C_Spell.IsSpellPassive, id)) == true)
+    end
+    local function AlertOn(p)
+        if p.isAction then return p.cdOnly and "cooldown" or "ready" end
+        return PS(p.key).remind or "up"
+    end
     st:Add(CreateHeader(child, "Alert me when", COL), 18)
     st:Add(CreateDropdown(child, COL, function()
-            if pageProc and pageProc.isAction and not pageProc.custom then
+            if pageProc and pageProc.isAction and not Castable(pageProc) then
                 return { { value = "ready", label = "It's ready to use (a reaction ability)" } }
             end
-            local out = { { value = "up", label = "It shows up (a proc)" },
+            local out = { { value = "up", label = "It shows up (you have the buff)" },
                           { value = "missing", label = "It's missing (a reminder to put it back)" } }
-            if pageProc and pageProc.custom then
-                out[#out + 1] = { value = "ready", label = "It's ready to use (an ability you cast)" }
+            if pageProc and Castable(pageProc) then
+                out[#out + 1] = { value = "ready", label = "It's available (ready to use)" }
+                out[#out + 1] = { value = "cooldown", label = "It's on cooldown (counts down until it's back)" }
             end
             return out
         end,
-        function()
-            if not pageProc then return "up" end
-            if pageProc.isAction then return "ready" end
-            return PS(pageProc.key).remind or "up"
-        end,
+        function() return pageProc and AlertOn(pageProc) or "up" end,
         function(v)
-            if not pageProc or (pageProc.isAction and not pageProc.custom) then return end
+            if not pageProc or (pageProc.isAction and not Castable(pageProc)) then return end
             local key = pageProc.key
             if v == "missing" then PSW(key).remind = "missing" else PSW(key).remind = nil end
-            if pageProc.custom and (v == "ready") ~= (pageProc.isAction and true or false) then
-                SetCustomKind(key, v == "ready")      -- buff <-> ability: rebuilt as a new proc
+            local want = (v == "ready" or v == "cooldown") and v or "buff"
+            local have = pageProc.isAction and AlertOn(pageProc) or "buff"
+            if want ~= have then
+                SetKind(key, want)                     -- rebuilt as a new proc
                 SelectView("PROC", key)
                 return
             end
@@ -4907,7 +5064,7 @@ local function BindProcPage(scrollTop)
     procPage.name:SetText(pageProc.buffName)
     procPage.kind:SetText(ProcKindText(pageProc))
     local isAction = pageProc.isAction and true or false
-    procPage.durationSlider:SetShown(isAction)
+    procPage.durationSlider:SetShown(isAction and not pageProc.cdOnly)     -- (a cooldown alert lasts the cooldown)
     for _, w in ipairs(procPage.stackWidgets) do w:SetShown(not isAction) end
     local y = isAction and procPage.yWithDuration or procPage.yStacksEnd
     local removable = (pageProc.custom or pageProc.auto) and true or false

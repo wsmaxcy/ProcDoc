@@ -32,7 +32,7 @@ It works out of the box: install it and procs light up. When you want to, every 
 1. **Visual alerts for procs**: pulsing images around your character whenever a proc is active, with a sound and a countdown. Each alert **pops in** with a bright flash the moment the proc happens, and quickly **shrinks away** when the proc is used or runs out.
 2. **Drag-and-drop layout**: with the options open, drag any alert to where you want it. **Shift + mouse wheel** over an alert resizes it. Each alert can also be shown on **both sides** of the screen as a mirrored pair.
 3. **Customisable countdowns**: drag the number to any spot on its alert, and Shift + wheel over it to resize it. Choose the font, outline, colors, when it turns "running out", and whether to show tenths.
-4. **Your own procs**: track any buff by name or spell ID, or pick one you have right now (in combat, pick from the buffs you had earlier). You can also add an ability and set it to light up whenever it's **ready to use**, the same way Overpower and Riposte do (great for practicing a rotation). Anything the game flags with its own proc glow is also picked up automatically.
+4. **Your own procs**: track any buff by name or spell ID, or pick one you have right now (in combat, pick from the buffs you had earlier). You can also add an ability and have its alert show while it's **on cooldown**, counting down until it's back (like Kick or Sprint), or while it's **available** to use (great for practicing a rotation). Both work in and out of combat. Anything the game flags with its own proc glow is also picked up automatically.
 5. **Buff reminders**: set any buff to alert when it's **missing** instead, like Slice and Dice, an armor or Intellect, so you know to put it back, in or out of combat.
 6. **Reaction abilities without action bars**: Overpower, Revenge, Riposte, Counterattack and Mongoose Bite light up when they become usable.
 7. **Clears when used**: alerts go away as soon as the proc is spent, even in combat, where Forever hides buff details from addons.
@@ -86,8 +86,9 @@ A slim panel docked near the side of the screen, so your alerts stay visible whi
   - **Look**: size (1.00x = the image's real pixel size, whatever your resolution) and opacity.
   - **Sound**: this proc's sound, or the default.
   - **Countdown**: show it or not, text size, color, on one side only (for pairs), and Reset countdown.
+  - **Alert me when**: the buff shows up, or it's missing (a reminder). For spells you cast (your own procs and the Cooldown Manager's), also while it's on cooldown (counting down until it's back) or while it's available.
   - **Stacks** (buff procs): a row of dots shows how many stacks you have. Filled dots are stacks you have and dim ones are the rest; the newest dot pops when you gain a stack. Choose **Show the alert at** N stacks, the **Number of dots** (auto uses the most stacks seen), the dot color, and dots on one side only. Drag the dots on screen to move them, or Shift + wheel over them to resize. **Test stacks** plays a pretend stacking buff through the alert so you can check it all without a real one.
-  - **Reaction window** length for reaction abilities.
+  - **Show for** (abilities shown while available): how long the alert stays up, or until you use it. A cooldown alert lasts as long as the cooldown.
   - **Remove from list** for your own and auto-detected procs.
 - **General tab**:
   - The pulse animation, the pop-in (on/off and strength), the shrink-away when a proc ends (on/off), a **Replay animation** button, and the scale of every alert.
@@ -159,7 +160,7 @@ Anything Forever adds is caught by **auto-detect** if the game shows its own pro
 
 When the Cooldown Manager is watching a proc, that's all ProcDoc goes by in combat; its other tricks (like spotting Remorseless from your killing blow) are only a backup for procs it can't see. Reaction abilities like Overpower and Riposte use the game's own "usable" state, the same thing that lights up their Cooldown Manager icon.
 
-**Every Cooldown Manager spell is in your list.** The Procs tab has a section with every other spell from your class's Cooldown Manager lists, switched off. Tick any of them to get an alert: buffs light up while they're active, abilities light up when they're ready to use. No need to add them by hand (a ticked buff is added to Tracked Buffs at your next `/reload` too).
+**Every Cooldown Manager spell is in your list.** The Procs tab has a section with every other spell from your class's Cooldown Manager lists, switched off. Tick any of them to get an alert. Buffs on you (Slice and Dice) light up while you have them. Abilities with a cooldown (Kick, Gouge) show while they're on cooldown, counting down until they're back. Abilities without one (Rupture, Garrote) show while they're available to use (a moment short of energy still counts, so it doesn't flash every time you spend some). It all works in and out of combat: in combat, when the game hides cooldowns, ProcDoc counts from your cast (and reads the Cooldown Manager's icon when it can't). Change it on the spell's page under **Alert me when**, just like your own procs: a buff can be a reminder when it's missing, and an ability can switch between "on cooldown" and "available". No need to add them by hand (a ticked buff is added to Tracked Buffs at your next `/reload` too).
 
 ---
 
