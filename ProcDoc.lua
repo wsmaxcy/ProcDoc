@@ -38,7 +38,7 @@ local DEFAULTS = {
     soundChannel        = "Master",
     autoDetect          = true,
     hideBlizzardOverlay = false,
-    cdmAuto             = true,    -- switch Blizzard's Cooldown Manager on (once per character)
+    cdmAuto             = true,    -- set Blizzard's Cooldown Manager up for ProcDoc (on, procs tracked, rows not Hidden)
     cdmHideBuffs        = true,    -- keep its Tracked Buffs icons invisible (ProcDoc still reads them)
     menuSide            = "LEFT",
     menuScale           = 1.0,
@@ -66,6 +66,7 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.cdmTips             = ProcDocDB.cdmTips or {}               -- [class][procKey] = true once the Cooldown Manager tip was shown
     ProcDocDB.cdmOffTold          = ProcDocDB.cdmOffTold or {}            -- ["Name-Realm"] = true once told the Cooldown Manager is off
     ProcDocDB.cdmAutoOn           = ProcDocDB.cdmAutoOn or {}             -- ["Name-Realm"] = true once ProcDoc switched it on there
+    ProcDocDB.cdmSetup            = ProcDocDB.cdmSetup or {}              -- ["Name-Realm"] = what the Cooldown Manager setup did (CDM.Record)
 end
 
 local function ProcDoc_LoadGlobalsFromDB()
@@ -2885,7 +2886,8 @@ end
 -- touched (the Tracked Buffs row fades itself with your buffs, and setting
 -- its alpha left it stuck invisible), the rows keep updating so ProcDoc
 -- still reads them, and showing them again is just moving them back. Done
--- out of combat only; their tooltips are switched off while hidden.
+-- out of combat only; their tooltips are switched off while hidden. Rows the
+-- setup took out of Edit Mode's Hidden (CDM.keep) stay hidden this way too.
 function CDM.Holder()
     if not CDM.holder then
         local h = CreateFrame("Frame", "ProcDocHiddenCooldownManager", UIParent)
@@ -2902,14 +2904,17 @@ function CDM.ApplyHide()
     -- shown again while Edit Mode is open, so they can be arranged
     local editing = EditModeManagerFrame
         and Clean(SafeCall(EditModeManagerFrame.IsShown, EditModeManagerFrame)) == true
-    local hide = G.cdmHideBuffs and not editing and true or false
-    if not hide and not CDM.holder then return end              -- never hid anything
+    if not CDM.keep then CDM.keep = CDM.Record().keep end
+    local keep = CDM.keep
+    if not (G.cdmHideBuffs or next(keep)) and not CDM.holder then return end   -- never hid anything
     local holder = CDM.Holder()
+    local hidden = {}
     for _, name in ipairs(CDM.HIDE) do
         local v = _G[name]
         if type(v) == "table" and type(v.SetParent) == "function" then
             local parent = SafeCall(v.GetParent, v)
-            if hide then
+            if (G.cdmHideBuffs or keep[name]) and not editing then
+                hidden[name] = true
                 if parent ~= holder then
                     CDM.origParent[name] = parent or UIParent
                     SafeCall(v.SetParent, v, holder)
@@ -2919,7 +2924,7 @@ function CDM.ApplyHide()
                     for _, f in ipairs({ v:GetChildren() }) do
                         if Clean(SafeCall(f.IsMouseMotionEnabled, f)) == true then
                             SafeCall(f.SetMouseMotionEnabled, f, false)
-                            CDM.mouseOff[f] = true
+                            CDM.mouseOff[f] = name
                         end
                     end
                 end
@@ -2929,9 +2934,11 @@ function CDM.ApplyHide()
             end
         end
     end
-    if not hide and next(CDM.mouseOff) then
-        for f in pairs(CDM.mouseOff) do SafeCall(f.SetMouseMotionEnabled, f, true) end
-        wipe(CDM.mouseOff)
+    for f, name in pairs(CDM.mouseOff) do
+        if not hidden[name] then
+            SafeCall(f.SetMouseMotionEnabled, f, true)
+            CDM.mouseOff[f] = nil
+        end
     end
 end
 
@@ -3105,6 +3112,167 @@ function CDM.Offered()
     return out, answered
 end
 
+-- Setting the Cooldown Manager up for ProcDoc ("Set it up for me", General).
+-- Two things keep a buff from it mid-fight: the buff isn't in Tracked Buffs
+-- or Bars (Blizzard leaves some out by default), or its row is set to Hidden
+-- in Edit Mode (a hidden row stops watching your buffs). ProcDoc fixes both
+-- the way the game's own settings windows do, but only at logout or /reload:
+-- running Blizzard's settings code from an addon taints its Cooldown Manager
+-- for the rest of the session (it then refuses combat data), and nothing
+-- runs after a logout. The game loads the changes clean next time. A row
+-- taken out of Hidden is kept out of sight by ProcDoc instead.
+CDM.BUFF_ROWS = { BuffIconCooldownViewer = "Tracked Buffs", BuffBarCooldownViewer = "Tracked Bars" }
+CDM.MAX_TRIES = 3
+
+function CDM.Who()
+    return (Clean(SafeCall(UnitName, "player")) or "?") .. "-" .. (Clean(SafeCall(GetRealmName)) or "?")
+end
+
+-- This character's setup record: moved[cooldownID] = logouts that tried to
+-- track it, or true once it showed up in a row (a player who takes it out
+-- later keeps it out); rowTries = logouts that tried to un-hide a row;
+-- keep[row] = true for rows ProcDoc hides because they were Hidden.
+function CDM.Record()
+    local who = CDM.Who()
+    local r = ProcDocDB.cdmSetup[who]
+    if type(r) ~= "table" then r = {}; ProcDocDB.cdmSetup[who] = r end
+    r.moved, r.keep, r.rowTries = r.moved or {}, r.keep or {}, r.rowTries or 0
+    return r
+end
+
+-- Buff rows set to Hidden in Edit Mode
+function CDM.HiddenRows()
+    local hidden = Enum and Enum.CooldownViewerVisibleSetting and Enum.CooldownViewerVisibleSetting.Hidden
+    local out = {}
+    if hidden == nil then return out end
+    for name in pairs(CDM.BUFF_ROWS) do
+        local v = _G[name]
+        if type(v) == "table" and Clean(v.visibleSetting) == hidden then out[#out + 1] = name end
+    end
+    table.sort(out)
+    return out
+end
+
+-- Spells this character knows for ProcDoc's enabled buff procs, in the
+-- Cooldown Manager's buff lists: { cid = cooldownID, proc = proc }
+function CDM.Wanted()
+    local api, cats = C_CooldownViewer, Enum and Enum.CooldownViewerCategory
+    local out = {}
+    if not (api and api.GetCooldownViewerCategorySet and cats) then return out end
+    for _, cat in ipairs({ cats.TrackedBuff, cats.TrackedBar }) do
+        local ids = Clean(SafeCall(api.GetCooldownViewerCategorySet, cat, true))
+        for _, cid in ipairs(type(ids) == "table" and ids or {}) do
+            cid = Clean(cid)
+            local p = cid and CDM.ProcFor(cid)
+            local info = p and IsProcEnabled(p) and Clean(SafeCall(api.GetCooldownViewerCooldownInfo, cid))
+            if type(info) == "table" and Clean(info.isKnown) then out[#out + 1] = { cid = cid, proc = p } end
+        end
+    end
+    return out
+end
+
+-- What's left to do on this character (only reads, safe any time): buffs
+-- with no icon yet that were never tried, Hidden rows, and what the setup
+-- gave up on (then the player gets the old tips instead)
+function CDM.SetupPending()
+    local r, shown = CDM.Record(), {}
+    for _, f in ipairs(CDM.Items()) do
+        local cid = CDM.CooldownID(f)
+        if cid then shown[cid] = true end
+    end
+    local todo, stuck, seen = {}, {}, {}
+    for _, w in ipairs(CDM.Wanted()) do
+        local tries = r.moved[w.cid]
+        if shown[w.cid] then
+            if type(tries) == "number" then r.moved[w.cid] = true end    -- the move stuck
+        elseif tries ~= true and not seen[w.proc.key] then
+            seen[w.proc.key] = true
+            if tries == nil then todo[#todo + 1] = w.proc.buffName
+            elseif tries >= CDM.MAX_TRIES then stuck[#stuck + 1] = w.proc end
+        end
+    end
+    local rows = CDM.HiddenRows()
+    if r.rowTries >= CDM.MAX_TRIES then return todo, {}, stuck, rows end
+    return todo, rows, stuck, {}
+end
+
+-- Put ProcDoc's buffs that Blizzard left out into Tracked Buffs: the same
+-- call as dragging one there in the Cooldown Manager's settings, then save
+function CDM.TrackWanted(r)
+    local cats = Enum and Enum.CooldownViewerCategory
+    local settings = _G.CooldownViewerSettings
+    local provider = type(settings) == "table" and type(settings.GetDataProvider) == "function"
+        and SafeCall(settings.GetDataProvider, settings)
+    local manager = type(provider) == "table" and SafeCall(provider.GetLayoutManager, provider)
+    if not (cats and cats.HiddenPassive and type(manager) == "table") then return end
+    local changed = false
+    for _, w in ipairs(CDM.Wanted()) do
+        local tries = r.moved[w.cid]
+        local info = SafeCall(provider.GetCooldownInfoForID, provider, w.cid)
+        if type(info) == "table" and info.category == cats.HiddenPassive then
+            if tries ~= true and (tries or 0) < CDM.MAX_TRIES then
+                SafeCall(provider.SetCooldownToCategory, provider, w.cid, cats.TrackedBuff)
+                r.moved[w.cid] = (tries or 0) + 1
+                changed = true
+                Trace("setup: %s put in Tracked Buffs", w.proc.key)
+            end
+        elseif type(info) == "table" and type(tries) == "number" then
+            r.moved[w.cid] = true                                        -- the move stuck
+        end
+    end
+    if changed then SafeCall(manager.SaveLayouts, manager) end
+end
+
+-- Set the buff rows' Visibility from Hidden to Always in the active Edit Mode
+-- layout (ProcDoc keeps them out of sight instead)
+function CDM.UnhideRows(r)
+    local vis = Enum and Enum.CooldownViewerVisibleSetting
+    local set = Enum and Enum.EditModeCooldownViewerSetting
+    local rows = CDM.HiddenRows()
+    if #rows == 0 or r.rowTries >= CDM.MAX_TRIES then return end
+    if not (vis and set and C_EditMode and C_EditMode.GetLayouts and C_EditMode.SaveLayouts) then return end
+    r.rowTries = r.rowTries + 1
+    local info = SafeCall(C_EditMode.GetLayouts)
+    local all = type(EditModePresetLayoutManager) == "table"
+        and SafeCall(EditModePresetLayoutManager.GetCopyOfPresetLayouts, EditModePresetLayoutManager)
+    if type(info) ~= "table" or type(info.layouts) ~= "table" or type(info.activeLayout) ~= "number"
+        or type(all) ~= "table" then return end
+    -- the same list the game's Edit Mode keeps and saves: its preset layouts
+    -- first, then the player's (activeLayout counts them all). Presets can't change.
+    local presets = #all
+    for _, l in ipairs(info.layouts) do all[#all + 1] = l end
+    info.layouts = all
+    local layout = info.activeLayout > presets and all[info.activeLayout]
+    if type(layout) ~= "table" or type(layout.systems) ~= "table" then return end
+    local changed = false
+    for _, s in ipairs(layout.systems) do
+        local name
+        for _, row in ipairs(rows) do                -- each row frame carries its Edit Mode system and index
+            local v = _G[row]
+            if type(s) == "table" and s.system ~= nil and s.system == v.system and s.systemIndex == v.systemIndex then name = row end
+        end
+        if name and type(s.settings) == "table" then
+            for _, st in ipairs(s.settings) do
+                if st.setting == set.VisibleSetting and st.value == vis.Hidden then
+                    st.value = vis.Always
+                    r.keep[name] = true
+                    changed = true
+                    Trace("setup: %s set from Hidden to Always (ProcDoc keeps it hidden)", name)
+                end
+            end
+        end
+    end
+    if changed then SafeCall(C_EditMode.SaveLayouts, info) end
+end
+
+-- At logout or /reload
+function CDM.Setup()
+    if not (initialized and G.cdmAuto and C_CooldownViewer) then return end
+    local r = CDM.Record()
+    CDM.TrackWanted(r)
+    CDM.UnhideRows(r)
+end
+
 -- Is one of the Cooldown Manager's buff icons watching this proc? (The
 -- standard: then that icon is all ProcDoc goes by in combat; see Predict.Run.)
 Predict.IsWatched = function(proc)
@@ -3173,19 +3341,21 @@ SyncCatalog = function()
 end
 
 -- One-time tips after login. If the Cooldown Manager is off: say so once per
--- character, and only when it would help this character. Once it's on: name
--- each proc it offers that isn't in Tracked Buffs yet (once per class).
+-- character, and only when it would help this character. Once it's on: say
+-- once per session what the setup will do at logout (CDM.Setup); anything it
+-- gave up on, or everything when "Set it up for me" is off, gets a tip
+-- (once per class).
 function CDM.Tip()
     if not C_CooldownViewer then return end
     local offered, answered = CDM.Offered()
     if CDM.Enabled() == false then
         local useful = #offered > 0 or (not answered and #buffProcs > 0)
         if not useful then return end
-        local who = (Clean(SafeCall(UnitName, "player")) or "?") .. "-" .. (Clean(SafeCall(GetRealmName)) or "?")
+        local who = CDM.Who()
         local names = {}
         for _, p in ipairs(offered) do names[#names + 1] = p.buffName end
         local what = #names > 0 and ("|cffffd100" .. table.concat(names, ", ") .. "|r") or "your procs"
-        -- "Turn it on for me" (General, on by default): once per character, so
+        -- "Set it up for me" (General, on by default): once per character, so
         -- turning it back off in the game's options sticks
         if G.cdmAuto and not ProcDocDB.cdmAutoOn[who] then
             ProcDocDB.cdmAutoOn[who] = true
@@ -3205,18 +3375,39 @@ function CDM.Tip()
         end
         return
     end
-    local tracked = {}
-    for _, f in ipairs(CDM.Items()) do
-        local p = CDM.ProcFor(CDM.CooldownID(f), f)
-        if p then tracked[p.key] = true end
+    local todo, rows, manual, stuckRows = CDM.SetupPending()
+    if not G.cdmAuto then
+        local tracked = {}
+        for _, f in ipairs(CDM.Items()) do
+            local p = CDM.ProcFor(CDM.CooldownID(f), f)
+            if p then tracked[p.key] = true end
+        end
+        manual = {}
+        for _, p in ipairs(offered) do
+            if not tracked[p.key] then manual[#manual + 1] = p end
+        end
+        stuckRows = CDM.HiddenRows()
+    elseif (#todo > 0 or #rows > 0) and #stuckRows == 0 and not CDM.toldSetup then
+        CDM.toldSetup = true
+        Print("will finish setting up Blizzard's Cooldown Manager the next time you |cff00ffff/reload|r or log out, so " ..
+            (#todo > 0 and ("|cffffd100" .. table.concat(todo, ", ") .. "|r") or "your procs") .. " light up mid-fight too.")
     end
     local told = ProcDocDB.cdmTips[playerClass] or {}
     ProcDocDB.cdmTips[playerClass] = told
-    for _, p in ipairs(offered) do
-        if not tracked[p.key] and not told[p.key] then
+    for _, p in ipairs(manual) do
+        if not told[p.key] then
             told[p.key] = true
             Print("tip: Add |cffffd100" .. p.buffName ..
                 "|r to Blizzard's Cooldown Manager (Tracked Buffs) and ProcDoc will catch it mid-fight too.")
+        end
+    end
+    for _, name in ipairs(stuckRows) do
+        if not told[name] then
+            told[name] = true
+            Print("tip: Blizzard's " .. CDM.BUFF_ROWS[name] .. " row is set to Hidden in Edit Mode, so ProcDoc can't " ..
+                "see your buffs in it mid-fight. In Edit Mode, set its Visibility to Always" ..
+                (G.cdmHideBuffs and " (ProcDoc keeps it invisible)." or
+                    ", and turn on |cff00ffff/procdoc|r > General > Hide its icons to keep it out of sight."))
         end
     end
 end
@@ -3243,16 +3434,20 @@ function CDM.Report()
     local on = CDM.Enabled()
     Print("Blizzard's Cooldown Manager: " .. ((on == true and "on") or
         (on == false and "|cffff5555off|r (type |cff00ffff/procdoc cdm on|r)") or "unknown"))
-    -- each row: shown by the game?, its own opacity, hidden by ProcDoc?
+    -- each row: shown by the game?, its own opacity, hidden by ProcDoc?, Hidden in Edit Mode?
+    local editHidden = {}
+    for _, name in ipairs(CDM.HiddenRows()) do editHidden[name] = true end
     for _, name in ipairs(CDM.HIDE) do
         local v = _G[name]
         if type(v) == "table" then
             local shown, alpha = Clean(SafeCall(v.IsShown, v)), Clean(SafeCall(v.GetAlpha, v))
             local mine = CDM.holder and SafeCall(v.GetParent, v) == CDM.holder
-            DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s: %s, opacity %s%s", name,
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s: %s, opacity %s%s%s", name,
                 (shown == nil and "?") or (shown and "shown") or "hidden by the game",
                 type(alpha) == "number" and string.format("%d%%", math.floor(alpha * 100 + 0.5)) or "?",
-                mine and ", hidden by ProcDoc (General > Hide its icons)" or ""))
+                mine and ", hidden by ProcDoc (General > Hide its icons)" or "",
+                editHidden[name] and (", |cffff5555set to Hidden in Edit Mode|r (it can't see buffs; " ..
+                    (G.cdmAuto and "ProcDoc fixes this when you log out or /reload)" or "set its Visibility to Always)")) or ""))
         end
     end
     for _, name in ipairs(CDM.VIEWERS) do
@@ -3312,11 +3507,14 @@ end
 
 do
 local cdmFrame = CreateFrame("Frame", "ProcDocCooldownManagerFrame", UIParent)
-for _, ev in ipairs({ "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_TALENT_UPDATE", "CHARACTER_POINTS_CHANGED" }) do
+for _, ev in ipairs({ "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_TALENT_UPDATE", "CHARACTER_POINTS_CHANGED",
+                      "PLAYER_LOGOUT" }) do
     SafeRegister(cdmFrame, ev)
 end
 cdmFrame:SetScript("OnEvent", GuardedHandler(function(self, event)
-    if event == "PLAYER_ENTERING_WORLD" then
+    if event == "PLAYER_LOGOUT" then                              -- also fires on /reload
+        CDM.Setup()
+    elseif event == "PLAYER_ENTERING_WORLD" then
         C_Timer.After(3, GuardedHandler(function() SyncCatalog() end))
         C_Timer.After(5, GuardedHandler(function() if initialized then CDM.Tip() end end))
     elseif not CDM.syncPending then                               -- new spells or talents: list them
@@ -4844,18 +5042,21 @@ local function BuildGeneralPage(parent)
         end,
         "Turns off the game's built-in proc art so only ProcDoc's alerts show."), 16, nil, 14)
 
-    -- (both take effect right away: no reload needed)
+    -- (hiding takes effect right away; the setup's changes are saved at logout or /reload)
     st:Add(CreateHeader(child, "Blizzard's Cooldown Manager", COL), 18)
-    st:Add(CreateCheck(child, "Turn it on for me",
+    st:Add(CreateCheck(child, "Set it up for me",
         function() return G.cdmAuto end,
         function(v)
             G.cdmAuto = v
             if v then CDM.TurnOn() end
         end,
-        "The Cooldown Manager can see your buffs in combat, so ProcDoc catches procs mid-fight once they're in its Tracked Buffs. ProcDoc switches it on once per character."), 16, nil, 10)
+        "The Cooldown Manager can see your buffs in combat, so ProcDoc catches procs mid-fight through it. ProcDoc switches it on (once per character), adds your procs to its Tracked Buffs, and makes sure its buff rows aren't set to Hidden in Edit Mode (a hidden row stops watching your buffs; ProcDoc keeps it invisible instead). Those changes are made when you log out or /reload."), 16, nil, 10)
     st:Add(CreateCheck(child, "Hide its icons",
         function() return G.cdmHideBuffs end,
-        function(v) G.cdmHideBuffs = v end,
+        function(v)
+            G.cdmHideBuffs = v
+            if not v then wipe(CDM.Record().keep) end                   -- show every row again
+        end,
         "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts."), 16, nil, 14)
 
     st:Add(CreateHeader(child, "Window & minimap", COL), 18)
