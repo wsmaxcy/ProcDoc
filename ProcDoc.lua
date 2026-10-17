@@ -4125,6 +4125,27 @@ local ART = {
 }
 local BORDER_R, BORDER_G, BORDER_B = 0.6, 0.6, 0.6             -- the silver of a classic tooltip border
 
+-- Does this client have a texture atlas? Some art (Forever's character
+-- select screen) is only used, so only checked, at runtime. Cached.
+local atlasSeen = {}
+local function HasAtlas(name)
+    if atlasSeen[name] == nil then
+        atlasSeen[name] = (C_Texture and C_Texture.GetAtlasInfo and SafeCall(C_Texture.GetAtlasInfo, name)) ~= nil
+    end
+    return atlasSeen[name]
+end
+
+-- An atlas that keeps its corners and edges when stretched to another shape
+local function SliceAtlas(tex, name, margin)
+    tex:SetAtlas(name)
+    if tex.SetTextureSliceMargins then
+        tex:SetTextureSliceMargins(margin, margin, margin, margin)
+        if tex.SetTextureSliceMode and Enum and Enum.UITextureSliceMode then
+            tex:SetTextureSliceMode(Enum.UITextureSliceMode.Stretched)
+        end
+    end
+end
+
 -- A dark box with a classic tooltip border (menus, tiles, the preview)
 local function Skin(frame, r, g, b, a)
     frame:SetBackdrop(ART.BOX)
@@ -4430,6 +4451,20 @@ local function ProcKindText(proc)
     return t
 end
 
+-- One line about what a proc does, for its card in the list
+local function ShortKind(proc)
+    if Remind.Is(proc) then return "Reminder when it's missing" end
+    if proc.isAction then
+        if proc.cdOnly then return "Counts down its cooldown" end
+        if proc.custom or proc.cdm then return "Lights up when available" end
+        return "Reaction ability"
+    end
+    if proc.auto then return "Detected from the game's proc glow" end
+    if proc.custom then return "Your own buff" end
+    if proc.cdm then return "Buff from the Cooldown Manager" end
+    return proc.minStacks and ("Buff proc, at " .. proc.minStacks .. " stacks") or "Buff proc"
+end
+
 local function SoundOptions(withDefault)
     local out = {}
     if withDefault then
@@ -4474,16 +4509,62 @@ local function CreateScrollPage(parent)
 
     local bar = CreateFrame("Slider", nil, page)
     bar:SetOrientation("VERTICAL")
-    bar:SetWidth(12)
-    bar:SetPoint("TOPRIGHT", -1, -4)
-    bar:SetPoint("BOTTOMRIGHT", -1, 4)
-    local track = bar:CreateTexture(nil, "BACKGROUND")
-    track:SetAllPoints()
-    track:SetColorTexture(0, 0, 0, 0.3)
+    local function Step(delta)
+        local _, maxScroll = bar:GetMinMaxValues()
+        local v = (bar:GetValue() or 0) - delta * 40
+        if v < 0 then v = 0 elseif v > (maxScroll or 0) then v = maxScroll or 0 end
+        bar:SetValue(v)
+    end
     local thumb = bar:CreateTexture(nil, "OVERLAY")
-    thumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")      -- the classic scrollbar knob
-    thumb:SetTexCoord(0.2, 0.8, 0.125, 0.875)
-    thumb:SetSize(14, 24)
+    local arrows = {}
+    if HasAtlas("minimal-scrollbar-track-top") then
+        -- the slim scrollbar from Forever's character select screen: a thin
+        -- track, a rounded thumb that lights up under the mouse, and step arrows
+        bar:SetWidth(8)
+        bar:SetPoint("TOPRIGHT", -5, -17)
+        bar:SetPoint("BOTTOMRIGHT", -5, 17)
+        local tTop, tBot, tMid = bar:CreateTexture(nil, "ARTWORK"), bar:CreateTexture(nil, "ARTWORK"), bar:CreateTexture(nil, "ARTWORK")
+        tTop:SetAtlas("minimal-scrollbar-track-top", true); tTop:SetPoint("TOPLEFT")
+        tBot:SetAtlas("minimal-scrollbar-track-bottom", true); tBot:SetPoint("BOTTOMLEFT")
+        tMid:SetAtlas("!minimal-scrollbar-track-middle", true)
+        tMid:SetPoint("TOPLEFT", tTop, "BOTTOMLEFT"); tMid:SetPoint("BOTTOMRIGHT", tBot, "TOPRIGHT")
+        thumb:SetColorTexture(0, 0, 0, 0)                   -- the slider moves this; the art rides on it
+        thumb:SetSize(8, 40)
+        local hTop, hBot, hMid = bar:CreateTexture(nil, "OVERLAY", nil, 1), bar:CreateTexture(nil, "OVERLAY", nil, 1), bar:CreateTexture(nil, "OVERLAY", nil, 1)
+        hTop:SetPoint("TOPLEFT", thumb, "TOPLEFT"); hBot:SetPoint("BOTTOMLEFT", thumb, "BOTTOMLEFT")
+        hMid:SetPoint("TOPLEFT", hTop, "BOTTOMLEFT"); hMid:SetPoint("BOTTOMRIGHT", hBot, "TOPRIGHT")
+        local function ThumbArt(state)                      -- "", "-over" or "-down"
+            hTop:SetAtlas("minimal-scrollbar-small-thumb-top" .. state, true)
+            hBot:SetAtlas("minimal-scrollbar-small-thumb-bottom" .. state, true)
+            hMid:SetAtlas("minimal-scrollbar-small-thumb-middle" .. state)
+        end
+        ThumbArt("")
+        bar:SetScript("OnEnter", function() ThumbArt("-over") end)
+        bar:SetScript("OnLeave", function() ThumbArt("") end)
+        bar:SetScript("OnMouseDown", function() ThumbArt("-down") end)
+        bar:SetScript("OnMouseUp", function(self) ThumbArt(self:IsMouseOver() and "-over" or "") end)
+        for i, spec in ipairs({ { "top", "BOTTOM", "TOP", 4, 1 }, { "bottom", "TOP", "BOTTOM", -4, -1 } }) do
+            local b = CreateFrame("Button", nil, page)
+            b:SetSize(17, 11)
+            b:SetPoint(spec[2], bar, spec[3], 0, spec[4])
+            b:SetNormalAtlas("minimal-scrollbar-arrow-" .. spec[1])
+            b:SetPushedAtlas("minimal-scrollbar-arrow-" .. spec[1] .. "-down")
+            b:SetHighlightAtlas("minimal-scrollbar-arrow-" .. spec[1] .. "-over", "BLEND")
+            b:SetScript("OnClick", function() Step(spec[5]) end)
+            arrows[i] = b
+        end
+        page.thumb = thumb
+    else
+        bar:SetWidth(12)
+        bar:SetPoint("TOPRIGHT", -1, -4)
+        bar:SetPoint("BOTTOMRIGHT", -1, 4)
+        local track = bar:CreateTexture(nil, "BACKGROUND")
+        track:SetAllPoints()
+        track:SetColorTexture(0, 0, 0, 0.3)
+        thumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")      -- the classic scrollbar knob
+        thumb:SetTexCoord(0.2, 0.8, 0.125, 0.875)
+        thumb:SetSize(14, 24)
+    end
     bar:SetThumbTexture(thumb)
     bar:SetMinMaxValues(0, 0)
     bar:SetValueStep(1)
@@ -4494,18 +4575,19 @@ local function CreateScrollPage(parent)
     end)
 
     local function Update()
-        local maxScroll = math.max(0, child:GetHeight() - (scroll:GetHeight() or 0))
+        local view, total = scroll:GetHeight() or 0, child:GetHeight() or 0
+        local maxScroll = math.max(0, total - view)
         bar:SetMinMaxValues(0, maxScroll)
         bar:SetShown(maxScroll > 0)
+        for _, b in ipairs(arrows) do b:SetShown(maxScroll > 0) end
+        if page.thumb and total > 0 then                    -- the slim thumb's length shows how much is in view
+            local track = bar:GetHeight() or 0
+            page.thumb:SetHeight(math.max(23, math.min(track, track * view / total)))
+        end
         if (bar:GetValue() or 0) > maxScroll then bar:SetValue(maxScroll) end
     end
     scroll:EnableMouseWheel(true)
-    scroll:SetScript("OnMouseWheel", function(self, delta)
-        local _, maxScroll = bar:GetMinMaxValues()
-        local v = (bar:GetValue() or 0) - delta * 40
-        if v < 0 then v = 0 elseif v > (maxScroll or 0) then v = maxScroll or 0 end
-        bar:SetValue(v)
-    end)
+    scroll:SetScript("OnMouseWheel", function(self, delta) Step(delta) end)
     scroll:SetScript("OnSizeChanged", Update)
 
     page.child, page.scroll, page.bar = child, scroll, bar
@@ -4539,16 +4621,32 @@ local function Label(parent, text)
 end
 
 -- Procs tab: list -------------------------------------------------------
+-- A row is a character card from Forever's character select screen (name in
+-- gold, a line about what it does, its icon on the right like the faction
+-- crest) where the client has that art; otherwise a plain row with a tag.
+local CARD = "glues-characterselect-card-singles"
 local function CreateListRow(parent)
     local row = CreateFrame("Button", nil, parent)
-    row:SetSize(CHILD_W - 12, 28)
-    local hl = row:CreateTexture(nil, "HIGHLIGHT")
-    hl:SetTexture(ART.ROW_HL)                                   -- the classic quest log highlight
-    hl:SetBlendMode("ADD")
-    hl:SetAllPoints()
+    local card = HasAtlas(CARD) and HasAtlas(CARD .. "-hover")
+    row:SetSize(CHILD_W - 12, card and 54 or 28)
     local bg = row:CreateTexture(nil, "BACKGROUND")
-    bg:SetColorTexture(0, 0, 0, 0.25)
     bg:SetAllPoints()
+    row.bg = bg
+    if card then
+        SliceAtlas(bg, CARD, 20)
+        -- the glowing card while the mouse is on it: drawn under the name and
+        -- icon (the highlight layer sits on top of everything and hid them)
+        row.hover = row:CreateTexture(nil, "BORDER")
+        row.hover:SetAllPoints()
+        SliceAtlas(row.hover, CARD .. "-hover", 20)
+        row.hover:Hide()
+    else
+        local hl = row:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints()
+        hl:SetTexture(ART.ROW_HL)                               -- the classic quest log highlight
+        hl:SetBlendMode("ADD")
+        bg:SetColorTexture(0, 0, 0, 0.25)
+    end
 
     row.check = CreateCheck(row, nil,
         function() return row.proc and IsProcEnabled(row.proc) end,
@@ -4560,23 +4658,52 @@ local function CreateListRow(parent)
                 if a then a.test = false end
             end
             ReevaluateAll()
-            row.name:SetAlpha(v and 1 or 0.45)
-            row.icon:SetDesaturated(not v)
+            row:Dim(v)
         end)
-    row.check:SetPoint("LEFT", 8, 0)
-
     row.icon = row:CreateTexture(nil, "ARTWORK")
-    row.icon:SetSize(20, 20)
-    row.icon:SetPoint("LEFT", row.check, "RIGHT", 8, 0)
     row.chevron = FS(row, "GameFontDisable", ">")
-    row.chevron:SetPoint("RIGHT", -10, 0)
     row.tag = FS(row, "GameFontDisableSmall")
-    row.tag:SetPoint("RIGHT", row.chevron, "LEFT", -8, 0)
-    row.name = FS(row, "GameFontHighlight")
-    row.name:SetPoint("LEFT", row.icon, "RIGHT", 8, 0)
-    row.name:SetPoint("RIGHT", row.tag, "LEFT", -6, 0)
+    row.name = FS(row, card and "GameFontNormalLarge" or "GameFontHighlight")
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
+    if card then
+        row.check:SetPoint("LEFT", 12, 0)
+        row.icon:SetSize(34, 34)
+        row.icon:SetPoint("RIGHT", -16, 0)
+        row.name:SetPoint("TOPLEFT", 42, -10)
+        row.name:SetPoint("RIGHT", row.icon, "LEFT", -10, 0)
+        row.sub = FS(row, "GameFontHighlightSmall")
+        row.sub:SetPoint("TOPLEFT", row.name, "BOTTOMLEFT", 0, -4)
+        row.sub:SetPoint("RIGHT", row.icon, "LEFT", -10, 0)
+        row.sub:SetJustifyH("LEFT")
+        row.sub:SetWordWrap(false)
+        row.chevron:Hide()
+        row.tag:Hide()                                          -- (the line under the name says it)
+        -- glows while the mouse is anywhere on the card, its checkbox too
+        local function Hover() row.hover:SetShown(row:IsMouseOver() and true or false) end
+        row:SetScript("OnEnter", Hover)
+        row:SetScript("OnLeave", Hover)
+        row.check:HookScript("OnEnter", Hover)
+        row.check:HookScript("OnLeave", Hover)
+    else
+        row.check:SetPoint("LEFT", 8, 0)
+        row.icon:SetSize(20, 20)
+        row.icon:SetPoint("LEFT", row.check, "RIGHT", 8, 0)
+        row.chevron:SetPoint("RIGHT", -10, 0)
+        row.tag:SetPoint("RIGHT", row.chevron, "LEFT", -8, 0)
+        row.name:SetPoint("LEFT", row.icon, "RIGHT", 8, 0)
+        row.name:SetPoint("RIGHT", row.tag, "LEFT", -6, 0)
+    end
+    -- switched-off procs fade back
+    row.Dim = function(self, enabled)
+        self.name:SetAlpha(enabled and 1 or 0.45)
+        if self.sub then self.sub:SetAlpha(enabled and 1 or 0.45) end
+        self.icon:SetDesaturated(not enabled)
+        if card then
+            local v = enabled and 1 or 0.6
+            self.bg:SetVertexColor(v, v, v)
+        end
+    end
 
     row:SetScript("OnClick", function(self) if self.proc then SelectView("PROC", self.proc.key) end end)
     return row
@@ -4585,6 +4712,7 @@ end
 local function BindListRow(row, proc)
     row.proc = proc
     row.name:SetText(proc.buffName)
+    if row.sub then row.sub:SetText(ShortKind(proc)) end
     local icon = ProcIcon(proc)
     if icon then
         row.icon:SetTexture(icon)
@@ -4593,9 +4721,7 @@ local function BindListRow(row, proc)
         row.icon:SetTexture((ResolveImage(proc)))
         row.icon:SetTexCoord(0.2, 0.8, 0.2, 0.8)
     end
-    local enabled = IsProcEnabled(proc)
-    row.name:SetAlpha(enabled and 1 or 0.45)
-    row.icon:SetDesaturated(not enabled)
+    row:Dim(IsProcEnabled(proc))
     local tag = ""
     if proc.cdm then
         tag = proc.isAction and (proc.cdOnly and "cooldown" or "ready") or "buff"
@@ -4622,7 +4748,7 @@ local function RebuildProcList()
         headerIndex = headerIndex + 1
         local h = listHeaders[headerIndex]
         if not h then
-            h = FS(child, "GameFontDisableSmall")
+            h = FS(child, "GameFontNormalSmall")
             h:SetJustifyH("LEFT")
             h:SetWidth(COL)
             listHeaders[headerIndex] = h
@@ -4643,7 +4769,7 @@ local function RebuildProcList()
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", 6, y)
         BindListRow(row, proc)
-        y = y - 30
+        y = y - (row:GetHeight() or 28) - 3
     end
 
     local className = UnitClass("player") or playerClass or ""
@@ -5605,6 +5731,14 @@ end
 local function BuildOptionsFrame()
     local f, standard = CreateWindow()
     optionsFrame = f
+    -- the warm bronze leather of Forever's character select list behind
+    -- everything (instead of the rock, the marble inset and the top streaks)
+    if standard and HasAtlas("heavybronze-frame-background") and type(f.Bg) == "table" then
+        f.Bg:SetAtlas("heavybronze-frame-background")
+        if f.Bg.SetHorizTile then f.Bg:SetHorizTile(false); f.Bg:SetVertTile(false) end
+        if type(f.TopTileStreaks) == "table" then f.TopTileStreaks:Hide() end
+        if type(f.Inset) == "table" and type(f.Inset.Bg) == "table" then f.Inset.Bg:Hide() end
+    end
     f:SetWidth(PANEL_W)
     f:SetFrameStrata("DIALOG")
     f:SetToplevel(true)
