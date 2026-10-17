@@ -22,8 +22,6 @@ local DEFAULTS = {
     popStrength         = 1.7,
     exitEnabled         = true,
     masterScale         = 1.0,
-    topOffset           = 70,
-    sideOffset          = 60,
     timerTextAlpha      = 0.85,
     timerTextSize       = 26,
     timerFont           = "FRIZ",
@@ -666,28 +664,36 @@ local SOUND_CHANNELS = {
 --    it, Shift+wheel over the countdown to resize it, right-click to edit.
 local HORIZONTAL_STYLES = { TOP = true, TOP2 = true, CENTER = true, BOTTOM = true, BOTTOM2 = true }
 
--- Preset positions (only used for defaults and migrating old settings)
-local function StyleAnchors(style)
-    local t, s = G.topOffset or 70, G.sideOffset or 60
-    local sideY = t - 150
+-- Where alerts start and how big (until the player moves or resizes one):
+-- side alerts level with your character, close in, top ones just above it,
+-- at 0.85x the image's real size. (Taken from a well-arranged Rogue.)
+local LAYOUT = { scale = 0.85, topY = 100, top2 = 60, sideX = 60, sideY = -20, outerX = 85,
+                 -- the spots ProcDoc used before; 4.0 layouts were nudges from them
+                 old = { topY = 70, top2 = 50, sideX = 60, sideY = -80, outerX = 50 } }
+
+-- Preset positions (for defaults and the snap buttons; `old` for migrating
+-- 4.0 settings, so those alerts stay where the player had them)
+local function StyleAnchors(style, old)
+    local L = old and LAYOUT.old or LAYOUT
+    local t, s, sideY = L.topY, L.sideX, L.sideY
     if style == "TOP" then
         return { { x = 0, y = t } }
     elseif style == "TOP2" then
-        return { { x = 0, y = t + 50 } }
+        return { { x = 0, y = t + L.top2 } }
     elseif style == "CENTER" then
         return { { x = 0, y = 0 } }
     elseif style == "BOTTOM" then
-        return { { x = 0, y = -(t + 120) } }
+        return { { x = 0, y = -190 } }
     elseif style == "BOTTOM2" then
-        return { { x = 0, y = -(t + 170) } }
+        return { { x = 0, y = -240 } }
     elseif style == "SIDES2" then
         return { { x = -(s + 50), y = sideY, pair = -1 }, { x = s + 50, y = sideY, pair = 1, flip = true } }
     elseif style == "SIDES3" then
         return { { x = -(s + 100), y = sideY, pair = -1 }, { x = s + 100, y = sideY, pair = 1, flip = true } }
     elseif style == "LEFT" then
-        return { { x = -(s + 50), y = sideY } }
+        return { { x = -(s + L.outerX), y = sideY } }
     elseif style == "RIGHT" then
-        return { { x = s + 50, y = sideY, flip = true } }
+        return { { x = s + L.outerX, y = sideY, flip = true } }
     elseif style == "LEFT_INNER" then
         return { { x = -s, y = sideY } }
     elseif style == "RIGHT_INNER" then
@@ -771,6 +777,7 @@ end
 -- Resolves the texture for a proc: returns texture, width, height, isIcon
 local function ResolveImage(proc)
     local img = PS(proc.key).image
+    if proc.imagePreview then img = proc.imagePreview.value end   -- hovered in the image picker
     if img == "ICON" then
         local icon = ProcIcon(proc)
         if icon then return icon, 96, 96, true end
@@ -994,13 +1001,13 @@ local function PieceTip(p)
     local s = PS(p.alert.proc.key)
     ShowEditTip(p, p.alert.proc.buffName,
         "Drag: move",
-        string.format("Shift + mouse wheel: size (%.2fx)", s.scale or 1),
+        string.format("Shift + mouse wheel: size (%.2fx)", s.scale or LAYOUT.scale),
         "Right-click: settings")
 end
 
 local function TimerTip(tf)
     local p = tf:GetParent()
-    local _, size = TimerFont(p.alert.proc, (PS(p.alert.proc.key).scale or 1) * (G.masterScale or 1))
+    local _, size = TimerFont(p.alert.proc, (PS(p.alert.proc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
     ShowEditTip(tf, "Countdown",
         "Drag: move it on the alert",
         string.format("Shift + mouse wheel: text size (%d)", size))
@@ -1056,8 +1063,8 @@ end
 local function OnPieceWheel(p, delta)
     if not EditMode() or not (IsShiftKeyDown and IsShiftKeyDown()) then return end
     local s = PSW(p.alert.proc.key)
-    local v = RoundTo(math.min(4, math.max(0.25, (s.scale or 1) + delta * 0.05)), 0.01)
-    s.scale = (math.abs(v - 1) > 0.001) and v or nil
+    local v = RoundTo(math.min(4, math.max(0.25, (s.scale or LAYOUT.scale) + delta * 0.05)), 0.01)
+    s.scale = (math.abs(v - LAYOUT.scale) > 0.001) and v or nil
     LayoutAlert(p.alert)
     PieceTip(p)
     if RefreshOptions then RefreshOptions() end
@@ -1067,7 +1074,7 @@ local function OnTimerWheel(tf, delta)
     if not EditMode() or not (IsShiftKeyDown and IsShiftKeyDown()) then return end
     local p = tf:GetParent()
     local proc = p.alert.proc
-    local _, size = TimerFont(proc, (PS(proc.key).scale or 1) * (G.masterScale or 1))
+    local _, size = TimerFont(proc, (PS(proc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
     PSW(proc.key).timerSize = math.min(80, math.max(6, size + delta))
     LayoutAlert(p.alert)
     TimerTip(tf)
@@ -1076,7 +1083,7 @@ end
 
 function Pips.Tip(pf)
     local p = pf:GetParent()
-    local size = Pips.Size(p.alert.proc, (PS(p.alert.proc.key).scale or 1) * (G.masterScale or 1))
+    local size = Pips.Size(p.alert.proc, (PS(p.alert.proc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
     ShowEditTip(pf, "Stack dots", "Drag: move them on the alert",
         string.format("Shift + mouse wheel: size (%d)", size))
 end
@@ -1101,7 +1108,7 @@ function Pips.OnWheel(pf, delta)
     if not EditMode() or not (IsShiftKeyDown and IsShiftKeyDown()) then return end
     local p = pf:GetParent()
     local proc = p.alert.proc
-    local size = Pips.Size(proc, (PS(proc.key).scale or 1) * (G.masterScale or 1))
+    local size = Pips.Size(proc, (PS(proc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
     PSW(proc.key).pipSize = math.min(40, math.max(4, size + delta))
     LayoutAlert(p.alert)
     Pips.Tip(pf)
@@ -1211,7 +1218,7 @@ LayoutAlert = function(a)
     if not w then
         if region == "TB" then w, h = 256, 128 else w, h = 128, 256 end
     end
-    local scale = (s.scale or 1) * (G.masterScale or 1)
+    local scale = (s.scale or LAYOUT.scale) * (G.masterScale or 1)
     local fontPath, fontSize, outline = TimerFont(proc, scale)
     local pixelScale = scale * PixelFactor()
     local pipSize = Pips.Size(proc, scale)
@@ -1853,7 +1860,7 @@ local function MigrateLegacySettings()
         if s.style or s.x or s.y then
             local proc = procByKey[key]
             local style = s.style or (proc and proc.alertStyle) or "SIDES"
-            local anchors = StyleAnchors(style)
+            local anchors = StyleAnchors(style, true)                  -- the spots those nudges were from
             local anc = anchors[1]
             local nx, ny = s.x or 0, s.y or 0
             s.px = anc.pair and (anc.pair * (math.abs(anc.x) + nx)) or (anc.x + nx)
@@ -3833,15 +3840,15 @@ local function SetUnlocked(on)
     end
     if unlockMode and not unlockBar then
         unlockBar = CreateFrame("Frame", "ProcDocUnlockBar", UIParent, "BackdropTemplate")
-        unlockBar:SetSize(560, 40)
+        unlockBar:SetSize(580, 46)
         unlockBar:SetPoint("TOP", UIParent, "TOP", 0, -90)
         unlockBar:SetFrameStrata("DIALOG")
-        unlockBar:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-        unlockBar:SetBackdropColor(0.06, 0.06, 0.08, 0.95)
-        unlockBar:SetBackdropBorderColor(accentR, accentG, accentB, 1)
+        unlockBar:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",   -- the classic dialog look
+                                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+                                tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
         local txt = unlockBar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        txt:SetPoint("LEFT", 14, 0)
-        txt:SetText("|cff00ff96ProcDoc|r  Drag to move  ·  Shift + wheel to resize  ·  Right-click to edit")
+        txt:SetPoint("LEFT", 18, 0)
+        txt:SetText("|cffffd100ProcDoc|r  Drag to move  ·  Shift + wheel to resize  ·  Right-click to edit")
         local lock = CreateFrame("Button", nil, unlockBar, "UIPanelButtonTemplate")
         lock:SetSize(70, 22)
         lock:SetPoint("RIGHT", -10, 0)
@@ -4097,15 +4104,31 @@ local function BuildOptionsModule()
         API.IMAGE_SIZE, API.procByKey, API.SetOptionsOpen, API.StopTests, API.VERSION, API.IS_FOREVER, API.Remind, API.CDM
     local SetKind = API.SetKind
 
--- 12) GUI widget helpers (flat, self-contained: no dependency on Blizzard
---     dropdown/slider templates, which differ between clients)
-local WHITE = "Interface\\Buttons\\WHITE8x8"
-local FLAT_BACKDROP = { bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 }
-local BORDER_R, BORDER_G, BORDER_B = 0.24, 0.24, 0.28
+-- 12) GUI widget helpers, in the classic look: Blizzard's classic art (the
+--     gold-trimmed dialog border, red panel buttons, classic checkboxes,
+--     sliders and tooltip borders), which ships with every client. Built by
+--     hand rather than from Blizzard's templates, which differ between clients.
+local ART = {
+    PANEL  = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+               edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+               tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } },
+    BOX    = { bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+               edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+               tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } },
+    SLIDER = { bgFile = "Interface\\Buttons\\UI-SliderBar-Background",
+               edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+               tile = true, tileSize = 8, edgeSize = 8, insets = { left = 3, right = 3, top = 6, bottom = 6 } },
+    BUTTON = "Interface\\Buttons\\UI-Panel-Button-",           -- .. Up / Down / Highlight
+    SLICES = { { 0, 0.09375 }, { 0.09375, 0.53125 }, { 0.53125, 0.625 } },   -- its left cap, middle, right cap
+    ARROW  = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-",   -- .. Up / Down / Highlight
+    ROW_HL = "Interface\\QuestFrame\\UI-QuestTitleHighlight",
+}
+local BORDER_R, BORDER_G, BORDER_B = 0.6, 0.6, 0.6             -- the silver of a classic tooltip border
 
+-- A dark box with a classic tooltip border (menus, tiles, the preview)
 local function Skin(frame, r, g, b, a)
-    frame:SetBackdrop(FLAT_BACKDROP)
-    frame:SetBackdropColor(r or 0.1, g or 0.1, b or 0.12, a or 1)
+    frame:SetBackdrop(ART.BOX)
+    frame:SetBackdropColor(r or 0.06, g or 0.06, b or 0.06, a or 0.92)
     frame:SetBackdropBorderColor(BORDER_R, BORDER_G, BORDER_B, 1)
 end
 
@@ -4125,56 +4148,77 @@ local function AttachTooltip(frame, title, body)
     frame:HookScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
+-- The classic red panel button: left cap, stretchy middle and right cap from
+-- Blizzard's button art, gold text, a glow on hover, pressed art on click
 local function CreateFlatButton(parent, text, width, height, onClick)
-    local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    local b = CreateFrame("Button", nil, parent)
     b:SetSize(width, height or 24)
-    Skin(b, 0.15, 0.15, 0.18, 1)
-    b.text = FS(b, "GameFontHighlight", text)
-    b.text:SetPoint("CENTER")
-    b:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(accentR, accentG, accentB, 1) end)
-    b:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(BORDER_R, BORDER_G, BORDER_B, 1) end)
-    b:SetScript("OnMouseDown", function(self) self:SetBackdropColor(0.1, 0.1, 0.12, 1) end)
-    b:SetScript("OnMouseUp", function(self) self:SetBackdropColor(0.15, 0.15, 0.18, 1) end)
+    b.art = {}
+    for i, u in ipairs(ART.SLICES) do
+        local t = b:CreateTexture(nil, "BACKGROUND")
+        t:SetTexture(ART.BUTTON .. "Up")
+        t:SetTexCoord(u[1], u[2], 0, 0.6875)
+        b.art[i] = t
+    end
+    local l, m, r = b.art[1], b.art[2], b.art[3]
+    local cap = math.min(12, math.floor(width / 3))
+    l:SetWidth(cap); l:SetPoint("TOPLEFT"); l:SetPoint("BOTTOMLEFT")
+    r:SetWidth(cap); r:SetPoint("TOPRIGHT"); r:SetPoint("BOTTOMRIGHT")
+    m:SetPoint("TOPLEFT", l, "TOPRIGHT"); m:SetPoint("BOTTOMRIGHT", r, "BOTTOMLEFT")
+    local hl = b:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetTexture(ART.BUTTON .. "Highlight")
+    hl:SetTexCoord(0, 0.625, 0, 0.6875)
+    hl:SetBlendMode("ADD")
+    hl:SetAllPoints()
+    b.text = FS(b, width >= 60 and "GameFontNormal" or "GameFontNormalSmall", text)
+    b.text:SetPoint("CENTER", 0, 1)
+    b:SetScript("OnMouseDown", function(self)
+        for _, t in ipairs(self.art) do t:SetTexture(ART.BUTTON .. "Down") end
+        self.text:SetPoint("CENTER", 1, -1)
+    end)
+    b:SetScript("OnMouseUp", function(self)
+        for _, t in ipairs(self.art) do t:SetTexture(ART.BUTTON .. "Up") end
+        self.text:SetPoint("CENTER", 0, 1)
+    end)
     if onClick then b:SetScript("OnClick", onClick) end
     return b
 end
 
+-- A section title in classic gold, with a faint gold rule after it
 local function CreateHeader(parent, text, width)
     local h = CreateFrame("Frame", nil, parent)
     h:SetSize(width or 250, 18)
     h.text = FS(h, "GameFontNormal", text)
     h.text:SetPoint("LEFT")
     local line = h:CreateTexture(nil, "ARTWORK")
-    line:SetColorTexture(1, 1, 1, 0.08)
+    line:SetColorTexture(1, 0.82, 0, 0.22)
     line:SetHeight(1)
     line:SetPoint("LEFT", h.text, "RIGHT", 8, 0)
     line:SetPoint("RIGHT")
     return h
 end
 
+-- The classic checkbox
 local function CreateCheck(parent, label, get, set, tip)
-    local c = CreateFrame("CheckButton", nil, parent, "BackdropTemplate")
-    c:SetSize(16, 16)
-    Skin(c, 0.06, 0.06, 0.08, 1)
-    local ck = c:CreateTexture(nil, "OVERLAY")
-    ck:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
-    ck:SetSize(22, 22)
-    ck:SetPoint("CENTER")
-    c:SetCheckedTexture(ck)
+    local c = CreateFrame("CheckButton", nil, parent)
+    c:SetSize(22, 22)
+    c:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+    c:SetPushedTexture("Interface\\Buttons\\UI-CheckBox-Down")
+    c:SetHighlightTexture("Interface\\Buttons\\UI-CheckBox-Highlight", "ADD")
+    c:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
     if label then
         c.label = FS(c, "GameFontHighlight", label)
-        c.label:SetPoint("LEFT", c, "RIGHT", 6, 0)
+        c.label:SetPoint("LEFT", c, "RIGHT", 2, 1)
         local w = c.label:GetStringWidth()
-        c:SetHitRectInsets(0, -((w and w > 0 and w or 150) + 8), -3, -3)
+        c:SetHitRectInsets(0, -((w and w > 0 and w or 150) + 4), 0, 0)
     end
     c:SetScript("OnClick", function(self) set(self:GetChecked() and true or false) end)
-    c:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(accentR, accentG, accentB, 1) end)
-    c:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(BORDER_R, BORDER_G, BORDER_B, 1) end)
     c.Refresh = function(self) self:SetChecked(get() and true or false) end
     if tip then AttachTooltip(c, label or "", tip) end
     return c
 end
 
+-- The classic slider: the bevelled bar and its knob
 local function CreateSlider(parent, label, minV, maxV, step, fmt, get, set, width)
     local h = CreateFrame("Frame", nil, parent)
     h:SetSize(width or 240, 38)
@@ -4183,29 +4227,18 @@ local function CreateSlider(parent, label, minV, maxV, step, fmt, get, set, widt
     h.value = FS(h, "GameFontNormalSmall")
     h.value:SetPoint("TOPRIGHT")
 
-    local s = CreateFrame("Slider", nil, h)
+    local s = CreateFrame("Slider", nil, h, "BackdropTemplate")
     s:SetOrientation("HORIZONTAL")
-    s:SetHeight(16)
-    s:SetPoint("TOPLEFT", 0, -16)
-    s:SetPoint("TOPRIGHT", 0, -16)
+    s:SetHeight(17)
+    s:SetPoint("TOPLEFT", 0, -15)
+    s:SetPoint("TOPRIGHT", 0, -15)
     s:EnableMouse(true)
-
-    local track = s:CreateTexture(nil, "BACKGROUND")
-    track:SetColorTexture(0.14, 0.14, 0.17, 1)
-    track:SetHeight(4)
-    track:SetPoint("LEFT")
-    track:SetPoint("RIGHT")
+    s:SetBackdrop(ART.SLIDER)
 
     local thumb = s:CreateTexture(nil, "OVERLAY")
-    thumb:SetColorTexture(0.95, 0.95, 0.95, 1)
-    thumb:SetSize(8, 14)
+    thumb:SetTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+    thumb:SetSize(32, 32)
     s:SetThumbTexture(thumb)
-
-    local fill = s:CreateTexture(nil, "ARTWORK")
-    fill:SetColorTexture(accentR, accentG, accentB, 0.9)
-    fill:SetHeight(4)
-    fill:SetPoint("LEFT", track, "LEFT")
-    fill:SetPoint("RIGHT", thumb, "CENTER")
 
     s:SetMinMaxValues(minV, maxV)
     s:SetValueStep(step)
@@ -4247,7 +4280,7 @@ local function OpenMenu(owner, options, current, onPick)
         menuFrame:SetFrameStrata("FULLSCREEN_DIALOG")
         menuFrame:SetClampedToScreen(true)
         menuFrame:EnableMouse(true)
-        Skin(menuFrame, 0.08, 0.08, 0.1, 0.98)
+        Skin(menuFrame, 0.03, 0.03, 0.03, 0.95)                -- like Blizzard's classic dropdown lists
     end
     for i, opt in ipairs(options) do
         local b = menuButtons[i]
@@ -4255,20 +4288,21 @@ local function OpenMenu(owner, options, current, onPick)
             b = CreateFrame("Button", nil, menuFrame)
             b:SetHeight(20)
             b.text = FS(b, "GameFontHighlightSmall")
-            b.text:SetPoint("LEFT", 10, 0)
+            b.text:SetPoint("LEFT", 22, 0)
             local hl = b:CreateTexture(nil, "HIGHLIGHT")
-            hl:SetColorTexture(1, 1, 1, 0.08)
+            hl:SetTexture(ART.ROW_HL)
+            hl:SetBlendMode("ADD")
             hl:SetAllPoints()
             b.mark = b:CreateTexture(nil, "OVERLAY")
-            b.mark:SetSize(3, 14)
-            b.mark:SetPoint("LEFT", 3, 0)
+            b.mark:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+            b.mark:SetSize(18, 18)
+            b.mark:SetPoint("LEFT", 2, 0)
             menuButtons[i] = b
         end
         b:ClearAllPoints()
-        b:SetPoint("TOPLEFT", menuFrame, "TOPLEFT", 1, -1 - (i - 1) * 20)
-        b:SetPoint("RIGHT", menuFrame, "RIGHT", -1, 0)
+        b:SetPoint("TOPLEFT", menuFrame, "TOPLEFT", 5, -5 - (i - 1) * 20)
+        b:SetPoint("RIGHT", menuFrame, "RIGHT", -5, 0)
         b.text:SetText(opt.label)
-        b.mark:SetColorTexture(accentR, accentG, accentB, 1)
         b.mark:SetShown(opt.value == current)
         b:SetScript("OnClick", function()
             CloseMenu()
@@ -4277,23 +4311,36 @@ local function OpenMenu(owner, options, current, onPick)
         b:Show()
     end
     for i = #options + 1, #menuButtons do menuButtons[i]:Hide() end
-    menuFrame:SetSize(math.max(owner:GetWidth(), 150), #options * 20 + 2)
+    menuFrame:SetSize(math.max(owner:GetWidth(), 150), #options * 20 + 10)
     menuFrame:ClearAllPoints()
     menuFrame:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 0, -2)
     menuCatcher:Show()
     menuFrame:Show()
 end
 
+-- A classic dropdown: a dark box with the choice in white and the gold-rimmed
+-- arrow button on the right; the box edge turns gold on hover
 local function CreateDropdown(parent, width, getOptions, get, set)
-    local d = CreateFlatButton(parent, "", width, 22)
-    d.text:ClearAllPoints()
-    d.text:SetPoint("LEFT", 8, 0)
-    d.text:SetPoint("RIGHT", -22, 0)
+    local d = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    d:SetSize(width, 22)
+    Skin(d, 0.03, 0.03, 0.03, 0.9)
+    d.text = FS(d, "GameFontHighlightSmall", "")
+    d.text:SetPoint("LEFT", 9, 0)
+    d.text:SetPoint("RIGHT", -26, 0)
     d.text:SetJustifyH("LEFT")
+    d.text:SetWordWrap(false)
     local arrow = d:CreateTexture(nil, "OVERLAY")
-    arrow:SetTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up")
-    arrow:SetSize(18, 18)
-    arrow:SetPoint("RIGHT", -2, 0)
+    arrow:SetTexture(ART.ARROW .. "Up")
+    arrow:SetSize(24, 24)
+    arrow:SetPoint("RIGHT", 0, 0)
+    local glow = d:CreateTexture(nil, "HIGHLIGHT")
+    glow:SetTexture(ART.ARROW .. "Highlight")
+    glow:SetBlendMode("ADD")
+    glow:SetAllPoints(arrow)
+    d:SetScript("OnMouseDown", function() arrow:SetTexture(ART.ARROW .. "Down") end)
+    d:SetScript("OnMouseUp", function() arrow:SetTexture(ART.ARROW .. "Up") end)
+    d:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(1, 0.82, 0, 1) end)
+    d:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(BORDER_R, BORDER_G, BORDER_B, 1) end)
     d:SetScript("OnClick", function(self)
         if menuFrame and menuFrame:IsShown() then CloseMenu() return end
         OpenMenu(self, getOptions(), get(), function(v)
@@ -4335,9 +4382,10 @@ local pageProc
 local generalWidgets, procWidgets = {}, {}
 local SelectView                -- forward
 
-local PANEL_W = 340
+local PANEL_W = 364
+local INSET   = 12              -- inside the classic dialog border
 local PAD     = 14
-local CHILD_W = PANEL_W - 14    -- scroll child width (room for the scrollbar)
+local CHILD_W = PANEL_W - 2 * INSET - 14    -- scroll child width (room for the scrollbar)
 local COL     = CHILD_W - 2 * PAD
 
 local function PreviewAfterChange(proc)
@@ -4426,20 +4474,24 @@ local function CreateScrollPage(parent)
 
     local bar = CreateFrame("Slider", nil, page)
     bar:SetOrientation("VERTICAL")
-    bar:SetWidth(6)
-    bar:SetPoint("TOPRIGHT", -4, -4)
-    bar:SetPoint("BOTTOMRIGHT", -4, 4)
+    bar:SetWidth(12)
+    bar:SetPoint("TOPRIGHT", -1, -4)
+    bar:SetPoint("BOTTOMRIGHT", -1, 4)
     local track = bar:CreateTexture(nil, "BACKGROUND")
     track:SetAllPoints()
-    track:SetColorTexture(1, 1, 1, 0.04)
+    track:SetColorTexture(0, 0, 0, 0.3)
     local thumb = bar:CreateTexture(nil, "OVERLAY")
-    thumb:SetColorTexture(1, 1, 1, 0.28)
-    thumb:SetSize(6, 40)
+    thumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")      -- the classic scrollbar knob
+    thumb:SetTexCoord(0.2, 0.8, 0.125, 0.875)
+    thumb:SetSize(14, 24)
     bar:SetThumbTexture(thumb)
     bar:SetMinMaxValues(0, 0)
     bar:SetValueStep(1)
     bar:SetValue(0)
-    bar:SetScript("OnValueChanged", function(self, v) scroll:SetVerticalScroll(v) end)
+    bar:SetScript("OnValueChanged", function(self, v)
+        CloseMenu()                          -- an open dropdown list would be left floating as its box scrolls away
+        scroll:SetVerticalScroll(v)
+    end)
 
     local function Update()
         local maxScroll = math.max(0, child:GetHeight() - (scroll:GetHeight() or 0))
@@ -4491,10 +4543,11 @@ local function CreateListRow(parent)
     local row = CreateFrame("Button", nil, parent)
     row:SetSize(CHILD_W - 12, 28)
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
-    hl:SetColorTexture(1, 1, 1, 0.05)
+    hl:SetTexture(ART.ROW_HL)                                   -- the classic quest log highlight
+    hl:SetBlendMode("ADD")
     hl:SetAllPoints()
     local bg = row:CreateTexture(nil, "BACKGROUND")
-    bg:SetColorTexture(1, 1, 1, 0.025)
+    bg:SetColorTexture(0, 0, 0, 0.25)
     bg:SetAllPoints()
 
     row.check = CreateCheck(row, nil,
@@ -4782,18 +4835,9 @@ local function BuildProcPage(parent)
     local function Snap(where)
         if not pageProc then return end
         local ps = PSW(pageProc.key)
-        local t, sd = G.topOffset or 70, G.sideOffset or 60
-        if where == "TOP" then
-            ps.px, ps.py, ps.both, ps.region = 0, t, false, "TB"
-        elseif where == "BOTTOM" then
-            ps.px, ps.py, ps.both, ps.region = 0, -(t + 120), false, "TB"
-        elseif where == "LEFT" then
-            ps.px, ps.py, ps.both, ps.region = -(sd + 50), t - 150, false, "SIDE"
-        elseif where == "RIGHT" then
-            ps.px, ps.py, ps.both, ps.region = sd + 50, t - 150, false, "SIDE"
-        else
-            ps.px, ps.py, ps.both, ps.region = -(sd + 50), t - 150, true, "SIDE"
-        end
+        local spot = StyleAnchors(where)[1]                     -- the same spots new alerts start at
+        ps.px, ps.py, ps.both = spot.x, spot.y, where == "SIDES"
+        ps.region = (where == "TOP" or where == "BOTTOM") and "TB" or "SIDE"
         for _, w in ipairs(procWidgets) do w:Refresh() end
         Changed()
     end
@@ -4835,7 +4879,7 @@ local function BuildProcPage(parent)
 
     -- Look
     st:Add(CreateHeader(child, "Look", COL), 18)
-    PSlider("Size: 1.00x = real image size (or Shift + wheel)", "scale", 1, 0.25, 4, 0.05,
+    PSlider("Size: 1.00x = real image size (or Shift + wheel)", "scale", LAYOUT.scale, 0.25, 4, 0.05,
         function(v) return string.format("%.2fx", v) end)
     PSlider("Opacity", "alpha", 1, 0.1, 1, 0.05,
         function(v) return string.format("%d%%", math.floor(v * 100 + 0.5)) end)
@@ -4873,7 +4917,7 @@ local function BuildProcPage(parent)
         function(v) return string.format("%d", math.floor(v + 0.5)) end,
         function()
             if not pageProc then return 26 end
-            local _, size = TimerFont(pageProc, (PS(pageProc.key).scale or 1) * (G.masterScale or 1))
+            local _, size = TimerFont(pageProc, (PS(pageProc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
             return size
         end,
         function(v)
@@ -5294,8 +5338,24 @@ local function BuildImagePicker(parent)
         h:SetPoint("TOPLEFT", PAD, y)
         y = y - 24
     end
+    -- Hovering a tile shows that image on the proc's alert on screen (popping
+    -- a silent preview if it isn't up); leaving it, or closing, puts back
+    -- the chosen one
+    local function PreviewImage(value)
+        if not pageProc then return end
+        pageProc.imagePreview = { value = value }
+        PreviewAfterChange(pageProc)
+    end
+    local function EndPreview()
+        if pageProc and pageProc.imagePreview then
+            pageProc.imagePreview = nil
+            RefreshAlert(GetAlert(pageProc))
+        end
+    end
+    p:SetScript("OnHide", EndPreview)
     local function Choose(value, custom)
         if not pageProc then return end
+        pageProc.imagePreview = nil
         PSW(pageProc.key).image = value
         PSW(pageProc.key).imageCustom = custom or nil
         p:Hide()
@@ -5324,7 +5384,9 @@ local function BuildImagePicker(parent)
             self:SetBackdropBorderColor(accentR, accentG, accentB, 1)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText(label, 1, 1, 1)
+            GameTooltip:AddLine("Showing on your alert. Click to use it.", 0.85, 0.85, 0.85, true)
             GameTooltip:Show()
+            PreviewImage(value)
         end)
         t:SetScript("OnLeave", function(self)
             if self.isSelected then
@@ -5333,6 +5395,7 @@ local function BuildImagePicker(parent)
                 self:SetBackdropBorderColor(BORDER_R, BORDER_G, BORDER_B, 1)
             end
             GameTooltip:Hide()
+            EndPreview()
         end)
         tiles[#tiles + 1] = t
         return t
@@ -5396,24 +5459,15 @@ local function BuildImagePicker(parent)
 end
 
 -- Window ------------------------------------------------------------------
+-- A tab: a red panel button, bright with gold text when it's the open one,
+-- dimmed with grey text when it isn't
 local function CreateTab(parent, text, onClick)
-    local b = CreateFrame("Button", nil, parent)
-    b:SetHeight(30)
-    b.text = FS(b, "GameFontNormal", text)
-    b.text:SetPoint("CENTER", 0, 1)
-    local hl = b:CreateTexture(nil, "HIGHLIGHT")
-    hl:SetColorTexture(1, 1, 1, 0.04)
-    hl:SetAllPoints()
-    b.line = b:CreateTexture(nil, "ARTWORK")
-    b.line:SetColorTexture(accentR, accentG, accentB, 1)
-    b.line:SetHeight(2)
-    b.line:SetPoint("BOTTOMLEFT")
-    b.line:SetPoint("BOTTOMRIGHT")
+    local b = CreateFlatButton(parent, text, 120, 24, onClick)
     b.SetActive = function(self, on)
-        self.line:SetShown(on)
-        self.text:SetFontObject(on and "GameFontHighlight" or "GameFontDisable")
+        local v = on and 1 or 0.5
+        for _, t in ipairs(self.art) do t:SetVertexColor(v, v, v) end
+        self.text:SetFontObject(on and "GameFontNormal" or "GameFontDisable")
     end
-    b:SetScript("OnClick", onClick)
     return b
 end
 
@@ -5484,34 +5538,109 @@ SelectView = function(view, key)
     end
 end
 
+-- The faint emblem behind the header: ProcDoc art that fits each class,
+-- sized, turned (degrees clockwise) and placed to sit in the header strip:
+-- { image, turn, width, height, x, y }
+local CLASS_EMBLEMS = {
+    WARRIOR = { "GoldenSword",         90, 170,  85, 40,   0 },   -- a warrior's blade
+    PALADIN = { "GoldenWingedEmblem",   0, 220, 110, 30,  -4 },   -- wings around a holy sigil
+    PRIEST  = { "DivineRays",           0, 200, 100, 34, -20 },   -- a sunrise of holy light
+    MAGE    = { "ArcaneRunes",          0, 200, 100, 34, -24 },   -- an arcane rune circle
+    WARLOCK = { "GlowingEyes",          0, 220, 110, 30,   0 },   -- demon eyes in the dark
+    ROGUE   = { "FlamingDagger",      270, 220, 110, 30,   0 },   -- a rogue's dagger
+    DRUID   = { "GreenVines",          90, 240, 120, 30,   0 },   -- living vines
+    SHAMAN  = { "StormStones",          0, 230, 115, 30,   0 },   -- earth and lightning
+    HUNTER  = { "GoldenCrosshair",      0, 120,  60, 40,   0 },   -- a hunter's aim
+}
+
+-- The window. In Forever: Blizzard's standard window (round portrait, metal
+-- corners, title bar, inset content box, button bar, tabs along the bottom),
+-- which Forever draws with its own classic-styled art, so ProcDoc looks like
+-- the game's own windows. Where that template is missing: the classic gold
+-- dialog with a title plate. Returns the window and whether it's the
+-- standard one.
+local function CreateWindow()
+    local ok, f = pcall(CreateFrame, "Frame", "ProcDocOptionsFrame", UIParent, "ButtonFrameTemplate")
+    if ok and f and type(f.NineSlice) == "table" then
+        local title = type(f.TitleContainer) == "table" and f.TitleContainer.TitleText
+        if f.SetTitle then f:SetTitle("ProcDoc") elseif title then title:SetText("ProcDoc") end
+        local portrait = type(f.PortraitContainer) == "table" and f.PortraitContainer.portrait
+        if portrait then portrait:SetTexture(ICON) end
+        return f, true
+    end
+    f = CreateFrame("Frame", "ProcDocOptionsFrame", UIParent, "BackdropTemplate")
+    f:SetBackdrop(ART.PANEL)                                   -- the classic gold-trimmed dialog
+    local shade = f:CreateTexture(nil, "BACKGROUND", nil, 1)   -- a touch darker, so text reads over the game
+    shade:SetColorTexture(0, 0, 0, 0.45)
+    shade:SetPoint("TOPLEFT", 11, -12)
+    shade:SetPoint("BOTTOMRIGHT", -12, 11)
+    local plate = f:CreateTexture(nil, "ARTWORK")
+    plate:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+    plate:SetSize(220, 56)
+    plate:SetPoint("TOP", 0, 12)
+    local plateText = FS(f, "GameFontNormal", "ProcDoc")
+    plateText:SetPoint("TOP", plate, "TOP", 0, -14)
+    return f, false
+end
+
+-- Blizzard's tab (along the bottom edge of the standard window), selected
+-- the way the game's own windows do it; the red-button tab where it's missing
+local function CreateStandardTab(parent, id, text, onClick)
+    if not (PanelTemplates_SelectTab and PanelTemplates_DeselectTab) then return nil end
+    local ok, b = pcall(CreateFrame, "Button", "ProcDocOptionsFrameTab" .. id, parent, "PanelTabButtonTemplate")
+    if not (ok and b) then return nil end
+    b:SetID(id)
+    b:SetText(text)
+    if PanelTemplates_TabResize then pcall(PanelTemplates_TabResize, b, 0) end
+    b:SetScript("OnClick", function(self)
+        if SOUNDKIT and SOUNDKIT.IG_CHARACTER_INFO_TAB then PlaySound(SOUNDKIT.IG_CHARACTER_INFO_TAB) end
+        onClick(self)
+    end)
+    b.SetActive = function(self, on)
+        pcall(on and PanelTemplates_SelectTab or PanelTemplates_DeselectTab, self)
+    end
+    return b
+end
+
 local function BuildOptionsFrame()
-    local f = CreateFrame("Frame", "ProcDocOptionsFrame", UIParent, "BackdropTemplate")
+    local f, standard = CreateWindow()
     optionsFrame = f
     f:SetWidth(PANEL_W)
     f:SetFrameStrata("DIALOG")
     f:SetToplevel(true)
-    f:SetBackdrop(FLAT_BACKDROP)
-    f:SetBackdropColor(0.055, 0.055, 0.07, 0.96)
-    f:SetBackdropBorderColor(0, 0, 0, 1)
     f:EnableMouse(true)
     f:SetMovable(true)
     f:SetClampedToScreen(true)
     f:Hide()
     table.insert(UISpecialFrames, "ProcDocOptionsFrame")
-    f:SetScript("OnShow", function() SetOptionsOpen(true) end)
+    -- opens with a quick fade-in
+    local intro = f.CreateAnimationGroup and f:CreateAnimationGroup()
+    if intro then
+        local fade = intro:CreateAnimation("Alpha")
+        fade:SetFromAlpha(0); fade:SetToAlpha(1); fade:SetDuration(0.15); fade:SetSmoothing("OUT")
+    end
+    f:SetScript("OnShow", function()
+        SetOptionsOpen(true)
+        if intro then intro:Play() end
+    end)
     f:SetScript("OnHide", function()
         CloseMenu()
         StopTests()
         SetOptionsOpen(false)
     end)
 
-    -- Header
-    local header = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    header:SetPoint("TOPLEFT", 1, -1)
-    header:SetPoint("TOPRIGHT", -1, -1)
-    header:SetHeight(44)
-    header:SetBackdrop({ bgFile = WHITE })
-    header:SetBackdropColor(0.085, 0.085, 0.11, 1)
+    -- Header (drag it to move the window): your class and ProcDoc's version,
+    -- over a faint emblem for your class
+    local header = CreateFrame("Frame", nil, f)
+    if standard then
+        header:SetPoint("TOPLEFT", 60, -22)                   -- beside the portrait, under the title bar
+        header:SetPoint("TOPRIGHT", -8, -22)
+        header:SetHeight(36)
+    else
+        header:SetPoint("TOPLEFT", INSET, -INSET - 14)
+        header:SetPoint("TOPRIGHT", -INSET, -INSET - 14)
+        header:SetHeight(40)
+    end
     header:EnableMouse(true)
     header:RegisterForDrag("LeftButton")
     header:SetScript("OnDragStart", function() f:StartMoving() end)
@@ -5520,66 +5649,118 @@ local function BuildOptionsFrame()
         if f.SetUserPlaced then f:SetUserPlaced(false) end   -- we save it ourselves
         SavePanelPosition(f)
     end)
-    local logo = header:CreateTexture(nil, "ARTWORK")
-    logo:SetSize(28, 28)
-    logo:SetPoint("LEFT", 10, 0)
-    logo:SetTexture(ICON)
-    logo:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    local title = FS(header, "GameFontNormalLarge", "ProcDoc")
-    title:SetPoint("TOPLEFT", logo, "TOPRIGHT", 8, 0)
+    if standard and type(f.TitleContainer) == "table" then     -- the title bar drags it too
+        f.TitleContainer:EnableMouse(true)
+        f.TitleContainer:RegisterForDrag("LeftButton")
+        f.TitleContainer:SetScript("OnDragStart", header:GetScript("OnDragStart"))
+        f.TitleContainer:SetScript("OnDragStop", header:GetScript("OnDragStop"))
+    end
+    if header.SetClipsChildren then header:SetClipsChildren(true) end
+    local glowFrame = CreateFrame("Frame", nil, header)
+    glowFrame:SetAllPoints()
+    local spec = CLASS_EMBLEMS[playerClass] or CLASS_EMBLEMS.PALADIN
+    local emblem = glowFrame:CreateTexture(nil, "BACKGROUND")
+    emblem:SetTexture(IMG .. spec[1] .. ".tga")
+    emblem:SetSize(spec[3], spec[4])
+    emblem:SetPoint("CENTER", glowFrame, "CENTER", spec[5], spec[6])
+    ApplyTexCoord(emblem, false, false, spec[2])
+    emblem:SetBlendMode("ADD")
+    emblem:SetAlpha(0.28)
+    local textLeft = standard and 6 or 46
+    if not standard then
+        local logo = header:CreateTexture(nil, "ARTWORK")
+        logo:SetSize(32, 32)
+        logo:SetPoint("LEFT", 6, 0)
+        logo:SetTexture(ICON)
+        logo:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    end
+    local title = FS(header, "GameFontNormalLarge", "|c" .. classColor .. (UnitClass("player") or "") .. "|r")
+    title:SetPoint("TOPLEFT", textLeft, -7)
     local sub = FS(header, "GameFontHighlightSmall",
-        "|c" .. classColor .. (UnitClass("player") or "") .. "|r  |cff777777" .. (VERSION == "dev" and "dev build" or ("v" .. VERSION)) ..
-        (IS_FOREVER and " · Forever" or "") .. "|r")
-    sub:SetPoint("BOTTOMLEFT", logo, "BOTTOMRIGHT", 8, 0)
-    local ok, close = pcall(CreateFrame, "Button", nil, header, "UIPanelCloseButton")
-    if not ok then close = CreateFlatButton(header, "X", 24, 24) end
-    close:SetPoint("RIGHT", -4, 0)
-    close:SetScript("OnClick", function() f:Hide() end)
+        "|cffaaaaaa" .. (VERSION == "dev" and "dev build" or ("v" .. VERSION)) .. (IS_FOREVER and " · Forever" or "") .. "|r")
+    sub:SetPoint("BOTTOMLEFT", textLeft, 0)
+    local close = standard and type(f.CloseButton) == "table" and f.CloseButton
+    if not close then
+        local ok, b = pcall(CreateFrame, "Button", nil, header, "UIPanelCloseButton")
+        close = ok and b or CreateFlatButton(header, "X", 24, 24)
+        close:SetPoint("RIGHT", -4, 0)
+        close:SetScript("OnClick", function() f:Hide() end)
+    end
     dockButton = CreateFlatButton(header, ">", 24, 22, function()
         G.menuSide = PanelOnRight() and "LEFT" or "RIGHT"
         G.menuX, G.menuY = nil, nil
         ApplyPanelGeometry()
     end)
-    dockButton:SetPoint("RIGHT", close, "LEFT", -4, 0)
+    if standard then dockButton:SetPoint("RIGHT", -2, 0) else dockButton:SetPoint("RIGHT", close, "LEFT", -4, 0) end
     AttachTooltip(dockButton, "Dock to the other side", "Snaps this window to the other edge of the screen. Drag the title bar to put it anywhere; it remembers the spot.")
 
-    -- Tabs
-    local tabs = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    tabs:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, 0)
-    tabs:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, 0)
-    tabs:SetHeight(30)
-    tabs:SetBackdrop({ bgFile = WHITE })
-    tabs:SetBackdropColor(0.07, 0.07, 0.09, 1)
-    tabProcs = CreateTab(tabs, "Procs", function()
+    -- Tabs: Blizzard's own along the bottom edge of the standard window,
+    -- otherwise red-button tabs under the header
+    local function ProcsTab()
         SelectView(currentView == "PROC" and "LIST" or (currentView == "GENERAL" and (pageProc and "PROC" or "LIST") or "LIST"))
-    end)
-    tabProcs:SetPoint("TOPLEFT")
-    tabProcs:SetPoint("BOTTOMRIGHT", tabs, "BOTTOM", 0, 0)
-    tabGeneral = CreateTab(tabs, "General", function() SelectView("GENERAL") end)
-    tabGeneral:SetPoint("TOPLEFT", tabs, "TOP", 0, 0)
-    tabGeneral:SetPoint("BOTTOMRIGHT")
+    end
+    local function GeneralTab() SelectView("GENERAL") end
+    tabProcs = standard and CreateStandardTab(f, 1, "Procs", ProcsTab)
+    tabGeneral = tabProcs and CreateStandardTab(f, 2, "General", GeneralTab)
+    local tabs
+    if tabProcs and tabGeneral then
+        tabProcs:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 12, 2)
+        tabGeneral:SetPoint("TOPLEFT", tabProcs, "TOPRIGHT", 3, 0)
+    else
+        if tabProcs then tabProcs:Hide() end                    -- (only one of Blizzard's tabs came out)
+        tabs = CreateFrame("Frame", nil, f)
+        tabs:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 6, -2)
+        tabs:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", -6, -2)
+        tabs:SetHeight(26)
+        tabProcs = CreateTab(tabs, "Procs", ProcsTab)
+        tabProcs:SetPoint("TOPLEFT")
+        tabProcs:SetPoint("BOTTOMRIGHT", tabs, "BOTTOM", -2, 0)
+        tabGeneral = CreateTab(tabs, "General", GeneralTab)
+        tabGeneral:SetPoint("TOPLEFT", tabs, "TOP", 2, 0)
+        tabGeneral:SetPoint("BOTTOMRIGHT")
+        local tabRule = f:CreateTexture(nil, "ARTWORK")
+        tabRule:SetColorTexture(1, 0.82, 0, 0.25)
+        tabRule:SetHeight(1)
+        tabRule:SetPoint("TOPLEFT", tabs, "BOTTOMLEFT", -6, -5)
+        tabRule:SetPoint("TOPRIGHT", tabs, "BOTTOMRIGHT", 6, -5)
+    end
 
-    -- Footer
-    local footer = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    footer:SetPoint("BOTTOMLEFT", 1, 1)
-    footer:SetPoint("BOTTOMRIGHT", -1, 1)
-    footer:SetHeight(40)
-    footer:SetBackdrop({ bgFile = WHITE })
-    footer:SetBackdropColor(0.085, 0.085, 0.11, 1)
-    local fw = math.floor((PANEL_W - 2 - 20 - 12) / 3)
-    local testAll = CreateFlatButton(footer, "Preview all", fw, 26, function() TestAll(nil) end)
-    testAll:SetPoint("LEFT", 10, 0)
-    local hideAll = CreateFlatButton(footer, "Hide", fw, 26, function() StopTests() end)
+    -- Footer: the standard window's button bar, or a ruled strip
+    local footer = CreateFrame("Frame", nil, f)
+    if standard then
+        footer:SetPoint("BOTTOMLEFT", 4, 3)
+        footer:SetPoint("BOTTOMRIGHT", -6, 3)
+        footer:SetHeight(22)
+    else
+        footer:SetPoint("BOTTOMLEFT", INSET, INSET)
+        footer:SetPoint("BOTTOMRIGHT", -INSET, INSET)
+        footer:SetHeight(38)
+        local footRule = footer:CreateTexture(nil, "ARTWORK")
+        footRule:SetColorTexture(1, 0.82, 0, 0.25)
+        footRule:SetHeight(1)
+        footRule:SetPoint("TOPLEFT")
+        footRule:SetPoint("TOPRIGHT")
+    end
+    local fw = math.floor((PANEL_W - 2 * INSET - 20 - 12) / 3)
+    local bh = standard and 22 or 26
+    local testAll = CreateFlatButton(footer, "Preview all", fw, bh, function() TestAll(nil) end)
+    testAll:SetPoint("LEFT", standard and 2 or 10, 0)
+    local hideAll = CreateFlatButton(footer, "Hide", fw, bh, function() StopTests() end)
     hideAll:SetPoint("LEFT", testAll, "RIGHT", 6, 0)
     AttachTooltip(hideAll, "Hide previews")
-    unlockButton = CreateFlatButton(footer, "Unlock", fw, 26, function() SetUnlocked(not unlockMode) end)
+    unlockButton = CreateFlatButton(footer, "Unlock", fw, bh, function() SetUnlocked(not unlockMode) end)
     unlockButton:SetPoint("LEFT", hideAll, "RIGHT", 6, 0)
     AttachTooltip(unlockButton, "Unlock alerts", "Shows every enabled alert so you can drag them into place. Right-click an alert to edit it.")
 
-    -- Content
+    -- Content (inside the standard window's inset box)
     local content = CreateFrame("Frame", nil, f)
-    content:SetPoint("TOPLEFT", tabs, "BOTTOMLEFT", 0, 0)
-    content:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, 0)
+    if standard then
+        content:SetPoint("TOPLEFT", INSET, -64)
+        content:SetPoint("BOTTOMRIGHT", -INSET, 30)
+    else
+        content:SetPoint("TOPLEFT", tabs, "BOTTOMLEFT", -6, -8)
+        content:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", 0, 2)
+    end
     listPage    = CreateScrollPage(content)
     procPage    = BuildProcPage(content)
     generalPage = BuildGeneralPage(content)

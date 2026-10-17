@@ -83,7 +83,7 @@ A slim panel docked near the side of the screen, so your alerts stay visible whi
 - **Each proc's page**:
   - **Preview**, **Image...** (any of the 76 images in `img\`, the spell icon, Blizzard's art, or your own file) and **Reset**.
   - **Position**: **Snap to** Top, Bottom, Left, Right or Sides (a mirrored left + right pair), then drag to fine-tune. Also Show all to arrange, Reset position, **Both sides**, **Mirror image**, and **Rotation**. *Auto* rotation turns the art to face outward (a snap decides which way); you can also pick 0 / 90 / 180 / 270 degrees.
-  - **Look**: size (1.00x = the image's real pixel size, whatever your resolution) and opacity.
+  - **Look**: size (1.00x = the image's real pixel size, whatever your resolution; alerts start at 0.85x) and opacity.
   - **Sound**: this proc's sound, or the default.
   - **Countdown**: show it or not, text size, color, on one side only (for pairs), and Reset countdown.
   - **Alert me when**: the buff shows up, or it's missing (a reminder). For spells you cast (your own procs and the Cooldown Manager's), also while it's on cooldown (counting down until it's back) or while it's available.
