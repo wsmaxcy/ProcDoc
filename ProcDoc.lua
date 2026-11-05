@@ -2969,7 +2969,7 @@ function CDM.Stacks(f)
     end
 end
 
--- "Hide its icons" (General): all of Blizzard's Cooldown Manager rows
+-- "Hide its icons" (Settings > Setup): all of Blizzard's Cooldown Manager rows
 -- (Tracked Buffs, Essential and Utility Cooldowns) are moved into an
 -- invisible holder frame. Blizzard's own opacity and fading are never
 -- touched (the Tracked Buffs row fades itself with your buffs, and setting
@@ -3237,7 +3237,7 @@ function CDM.Offered()
     return out, answered
 end
 
--- Setting the Cooldown Manager up for ProcDoc ("Set it up for me", General).
+-- Setting the Cooldown Manager up for ProcDoc ("Set it up for me", Settings > Setup).
 -- Two things keep a buff from it mid-fight: the buff isn't in Tracked Buffs
 -- or Bars (Blizzard leaves some out by default), or its row is set to Hidden
 -- in Edit Mode (a hidden row stops watching your buffs). ProcDoc fixes both
@@ -3507,7 +3507,7 @@ function CDM.Tip()
         local names = {}
         for _, p in ipairs(offered) do names[#names + 1] = p.buffName end
         local what = #names > 0 and ("|cffffd100" .. table.concat(names, ", ") .. "|r") or "your procs"
-        -- "Set it up for me" (General, on by default): once per character, so
+        -- "Set it up for me" (Settings > Setup, on by default): once per character, so
         -- turning it back off in the game's options sticks
         if G.cdmAuto and not ProcDocDB.cdmAutoOn[who] then
             ProcDocDB.cdmAutoOn[who] = true
@@ -3515,7 +3515,7 @@ function CDM.Tip()
             if CDM.Enabled() then
                 Print("turned on Blizzard's Cooldown Manager so ProcDoc can catch " .. what .. " mid-fight" ..
                     (G.cdmHideBuffs and " (its icons stay hidden; you'll see ProcDoc's alerts)" or "") ..
-                    ". Change this in |cff00ffff/procdoc|r > General.")
+                    ". Change this in |cff00ffff/procdoc|r > Settings > Setup.")
                 C_Timer.After(1, GuardedHandler(function() CDM.Tip() end))   -- then what to track
                 return
             end
@@ -3559,7 +3559,7 @@ function CDM.Tip()
             Print("tip: Blizzard's " .. CDM.BUFF_ROWS[name] .. " row is set to Hidden in Edit Mode, so ProcDoc can't " ..
                 "see your buffs in it mid-fight. In Edit Mode, set its Visibility to Always" ..
                 (G.cdmHideBuffs and " (ProcDoc keeps it invisible)." or
-                    ", and turn on |cff00ffff/procdoc|r > General > Hide its icons to keep it out of sight."))
+                    ", and turn on |cff00ffff/procdoc|r > Settings > Setup > Hide its icons to keep it out of sight."))
         end
     end
 end
@@ -3597,7 +3597,7 @@ function CDM.Report()
             DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s: %s, opacity %s%s%s", name,
                 (shown == nil and "?") or (shown and "shown") or "hidden by the game",
                 type(alpha) == "number" and string.format("%d%%", math.floor(alpha * 100 + 0.5)) or "?",
-                mine and ", hidden by ProcDoc (General > Hide its icons)" or "",
+                mine and ", hidden by ProcDoc (Settings > Setup > Hide its icons)" or "",
                 editHidden[name] and (", |cffff5555set to Hidden in Edit Mode|r (it can't see buffs; " ..
                     (G.cdmAuto and "ProcDoc fixes this when you log out or /reload)" or "set its Visibility to Always)")) or ""))
         end
@@ -4397,7 +4397,7 @@ end
 -- 13) Options UI
 --     A narrow, tall panel docked to the left or right screen edge so the
 --     alerts in the middle of the screen stay visible while editing.
---     Tabs: "Procs" (list -> per-proc page) and "General". Every page is a
+--     Tabs: "Procs" (list -> per-proc page) and "Settings". Every page is a
 --     single scrolling column. Changes apply live and pop a short preview.
 local optionsFrame
 local listPage, procPage, generalPage, imagePicker
@@ -4504,7 +4504,7 @@ local function UpdatePreviewBox()
     end
     local rot, flip, dw, dh = PieceOrientation(region, x, y, w, h, s)
     procPage.previewTex:SetTexture(img)
-    FitTexture(procPage.previewTex, dw, dh, 84)
+    FitTexture(procPage.previewTex, dw, dh, procPage.previewSize or 84)
     ApplyTexCoord(procPage.previewTex, flip, isIcon, rot)
 end
 
@@ -4653,12 +4653,21 @@ local function CreateListRow(parent)
         row.hover:SetAllPoints()
         SliceAtlas(row.hover, CARD .. "-hover", 20)
         row.hover:Hide()
+        row.flash = row:CreateTexture(nil, "BORDER", nil, 1)    -- the same glow, on a card that just moved
+        row.flash:SetAllPoints()
+        SliceAtlas(row.flash, CARD .. "-hover", 20)
+        row.flash:Hide()
     else
         local hl = row:CreateTexture(nil, "HIGHLIGHT")
         hl:SetAllPoints()
         hl:SetTexture(ART.ROW_HL)                               -- the classic quest log highlight
         hl:SetBlendMode("ADD")
         bg:SetColorTexture(0, 0, 0, 0.25)
+        row.flash = row:CreateTexture(nil, "BORDER")
+        row.flash:SetAllPoints()
+        row.flash:SetTexture(ART.ROW_HL)
+        row.flash:SetBlendMode("ADD")
+        row.flash:Hide()
     end
 
     row.check = CreateCheck(row, nil,
@@ -4672,9 +4681,12 @@ local function CreateListRow(parent)
             end
             ReevaluateAll()
             row:Dim(v)
-            -- a ticked proc moves up under the others; an unticked one stays
-            -- put until the next tick
-            if v and RefreshOptions then RefreshOptions() end
+            -- a ticked proc slides up under the others; an unticked one
+            -- stays put until the next tick
+            if v and listPage and RefreshOptions then
+                listPage.slide = row.proc
+                RefreshOptions()
+            end
         end)
     row.icon = row:CreateTexture(nil, "ARTWORK")
     row.chevron = FS(row, "GameFontDisable", ">")
@@ -4685,7 +4697,13 @@ local function CreateListRow(parent)
     if card then
         row.check:SetPoint("LEFT", 12, 0)
         row.icon:SetSize(34, 34)
-        row.icon:SetPoint("RIGHT", -16, 0)
+        row.icon:SetPoint("RIGHT", -32, 0)
+        -- an arrow at the end of the card: click it to open its settings
+        row.arrow = row:CreateTexture(nil, "ARTWORK")
+        row.arrow:SetTexture("Interface\\ChatFrame\\ChatFrameExpandArrow")
+        row.arrow:SetSize(14, 14)
+        row.arrow:SetPoint("RIGHT", -12, 0)
+        row.arrow:SetAlpha(0.6)
         row.name:SetPoint("TOPLEFT", 42, -10)
         row.name:SetPoint("RIGHT", row.icon, "LEFT", -10, 0)
         row.sub = FS(row, "GameFontHighlightSmall")
@@ -4696,7 +4714,11 @@ local function CreateListRow(parent)
         row.chevron:Hide()
         row.tag:Hide()                                          -- (the line under the name says it)
         -- glows while the mouse is anywhere on the card, its checkbox too
-        local function Hover() row.hover:SetShown(row:IsMouseOver() and true or false) end
+        local function Hover()
+            local on = row:IsMouseOver() and true or false
+            row.hover:SetShown(on)
+            row.arrow:SetAlpha(on and 1 or 0.6)
+        end
         row:SetScript("OnEnter", Hover)
         row:SetScript("OnLeave", Hover)
         row.check:HookScript("OnEnter", Hover)
@@ -4722,6 +4744,15 @@ local function CreateListRow(parent)
     end
 
     row:SetScript("OnClick", function(self) if self.proc then SelectView("PROC", self.proc.key) end end)
+    row:HookScript("OnEnter", function(self)
+        if not self.proc then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(self.proc.buffName, 1, 0.82, 0)
+        GameTooltip:AddLine("Click to edit it: when it alerts, its look, where it shows, its timer and sound.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Tick the box to turn it on or off.", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    row:HookScript("OnLeave", function() GameTooltip:Hide() end)
     return row
 end
 
@@ -4749,9 +4780,81 @@ local function BindListRow(row, proc)
     row:Show()
 end
 
+-- A ticked proc slides from where it was up to its new place (the rows it
+-- passes slide down to make room), glowing, and the list scrolls along when
+-- that place is out of view: you see where it went. `before` holds where each
+-- proc's row was.
+local SLIDE_TIME, GLOW_TIME = 0.4, 1.4
+local function SlideListRows(before, ticked)
+    local page, start = listPage, GetTime()
+    local moving, glow = {}, nil
+    for _, row in ipairs(listRows) do
+        local from = row:IsShown() and row.proc and before[row.proc]
+        if from and math.abs(from - row.y) > 0.5 then
+            row.fromY = from
+            moving[#moving + 1] = row
+        end
+        if row:IsShown() and row.proc == ticked then glow = row end
+    end
+    if glow then
+        glow.flash:SetAlpha(1)
+        glow.flash:Show()
+        glow:SetFrameLevel(glow.baseLevel + 5)                 -- over the rows it passes
+    end
+    -- keep its new place in view
+    local fromScroll, toScroll = page.bar:GetValue() or 0, nil
+    if glow then
+        local view = page.scroll:GetHeight() or 0
+        local _, maxScroll = page.bar:GetMinMaxValues()
+        local top, bottom = -glow.y, -glow.y + (glow:GetHeight() or 0)
+        if top < fromScroll then
+            toScroll = top - 8
+        elseif bottom > fromScroll + view then
+            toScroll = bottom - view + 8
+        end
+        if toScroll then toScroll = math.max(0, math.min(maxScroll or 0, toScroll)) end
+    end
+    local function Step()
+        local t = math.min(1, (GetTime() - start) / SLIDE_TIME)
+        local e = 1 - (1 - t) ^ 3                              -- quick, then settling in
+        for _, row in ipairs(moving) do
+            row.curY = row.fromY + (row.y - row.fromY) * e
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 6, row.curY)
+        end
+        if toScroll then page.bar:SetValue(fromScroll + (toScroll - fromScroll) * e) end
+        local g = GetTime() - start
+        if glow then glow.flash:SetAlpha(math.max(0, math.min(1, (GLOW_TIME - g) / (GLOW_TIME - SLIDE_TIME)))) end
+        if t >= 1 then
+            for _, row in ipairs(moving) do row.curY = nil end
+            moving = {}
+        end
+        if g >= GLOW_TIME then
+            if glow then
+                glow.flash:Hide()
+                glow:SetFrameLevel(glow.baseLevel)
+            end
+            page.anim:SetScript("OnUpdate", nil)
+        end
+    end
+    page.anim = page.anim or CreateFrame("Frame", nil, page)
+    page.anim:SetScript("OnUpdate", Step)
+    Step()                                                     -- (start from where they were)
+end
+
 local function RebuildProcList()
     if not listPage then return end
     local child = listPage.child
+    -- where each proc's row is now (mid-slide included), then stop any slide
+    local before, ticked = {}, listPage.slide
+    listPage.slide = nil
+    for _, row in ipairs(listRows) do
+        if row:IsShown() and row.proc then before[row.proc] = row.curY or row.y end
+        row.curY = nil
+        if row.flash then row.flash:Hide() end
+        if row.baseLevel then row:SetFrameLevel(row.baseLevel) end
+    end
+    if listPage.anim then listPage.anim:SetScript("OnUpdate", nil) end
     for _, row in ipairs(listRows) do row:Hide() end
     for _, h in ipairs(listHeaders) do h:Hide() end
     local y, rowIndex, headerIndex = -8, 0, 0
@@ -4776,16 +4879,27 @@ local function RebuildProcList()
         local row = listRows[rowIndex]
         if not row then
             row = CreateListRow(child)
+            row.baseLevel = row:GetFrameLevel()
             listRows[rowIndex] = row
         end
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", 6, y)
+        row.y = y
         BindListRow(row, proc)
         y = y - (row:GetHeight() or 28) - 3
     end
 
     local className = UnitClass("player") or playerClass or ""
     Header(string.upper(className) .. " PROCS")
+    local hint = listPage.hint
+    if not hint then
+        hint = Label(child, "Tick a proc to turn it on. Click it to change how it\nalerts: its look, where it shows, its timer and sound.")
+        hint:SetJustifyH("LEFT")
+        listPage.hint = hint
+    end
+    hint:ClearAllPoints()
+    hint:SetPoint("TOPLEFT", PAD, y + 2)
+    y = y - 30
     -- One list: built in, from the Cooldown Manager, auto-detected and your
     -- own alike. Ticked procs on top in the order they were ticked, then the
     -- rest by name. The order holds while you work: unticking leaves a proc
@@ -4820,8 +4934,8 @@ local function RebuildProcList()
         listPage.order, listPage.resort = order, nil
     end
     for _, proc in ipairs(order) do Row(proc) end
+    if ticked then SlideListRows(before, ticked) end
     if #order == 0 then Header("None yet. Auto-detect will add them.") end
-    Header("Click a proc to customise it.")
 
     -- Add your own proc
     local add = listPage.addBox
@@ -4873,242 +4987,156 @@ local function RebuildProcList()
 end
 
 -- Procs tab: detail page -------------------------------------------------
+-- Previous / next go through the procs in the order the list shows them
 local function StepProc(dir)
-    if #classProcs == 0 then return end
+    local list = (listPage and listPage.order) or classProcs
+    if #list == 0 then return end
     local idx = 1
-    for i, p in ipairs(classProcs) do
+    for i, p in ipairs(list) do
         if p == pageProc then idx = i break end
     end
-    idx = ((idx - 1 + dir) % #classProcs) + 1
-    SelectView("PROC", classProcs[idx].key)
+    idx = ((idx - 1 + dir) % #list) + 1
+    SelectView("PROC", list[idx].key)
 end
 
-local function BuildProcPage(parent)
-    local page = CreateScrollPage(parent)
-    page:Hide()
-    local child = page.child
-    local st = Stack(page, procWidgets)
-
-    local function Changed()
-        UpdatePreviewBox()
-        PreviewAfterChange(pageProc)
+local function CreateTab(parent, text, onClick)
+    local b = CreateFlatButton(parent, text, 120, 24, onClick)
+    b.SetActive = function(self, on)
+        local v = on and 1 or 0.5
+        for _, t in ipairs(self.art) do t:SetVertexColor(v, v, v) end
+        self.text:SetFontObject(on and "GameFontNormal" or "GameFontDisable")
     end
-    local function PSlider(label, key, default, minV, maxV, step, fmt)
-        return st:Add(CreateSlider(child, label, minV, maxV, step, fmt,
-            function() return pageProc and PS(pageProc.key)[key] or default end,
-            function(v)
-                if not pageProc then return end
-                PSW(pageProc.key)[key] = (v ~= default) and v or nil
-                Changed()
-            end, COL), 38)
-    end
+    return b
+end
 
-    -- Navigation row
-    st:Add(CreateFlatButton(child, "< All procs", 96, 22, function() SelectView("LIST") end), 22, nil, 10)
-    local nextB = CreateFlatButton(child, ">", 26, 22, function() StepProc(1) end)
-    nextB:SetPoint("TOPRIGHT", child, "TOPRIGHT", -PAD, -10)
+-- A row of tabs over a set of scroll pages, one page shown at a time (a
+-- proc's page and Settings both use it). `top` is how far down the parent
+-- the tabs sit. Hidden tabs leave no gap: the rest share the row.
+local function CreateSubPages(parent, names, top)
+    local book = { pages = {}, tabs = {}, names = names }
+    local bar = CreateFrame("Frame", nil, parent)
+    bar:SetPoint("TOPLEFT", 4, -top)
+    bar:SetPoint("TOPRIGHT", -4, -top)
+    bar:SetHeight(24)
+    local area = CreateFrame("Frame", nil, parent)
+    area:SetPoint("TOPLEFT", 0, -(top + 30))
+    area:SetPoint("BOTTOMRIGHT")
+    for _, name in ipairs(names) do
+        book.tabs[name] = CreateTab(bar, name, function() book:Show(name) end)
+        local sub = CreateScrollPage(area)
+        sub:Hide()
+        book.pages[name] = sub
+    end
+    function book:Layout()
+        local shown = {}
+        for _, n in ipairs(self.names) do
+            if self.tabs[n]:IsShown() then shown[#shown + 1] = n end
+        end
+        local gap = 4
+        local w = ((PANEL_W - 2 * INSET - 8) - gap * (#shown - 1)) / #shown
+        for i, n in ipairs(shown) do
+            local t = self.tabs[n]
+            t:SetSize(w, 24)
+            t:ClearAllPoints()
+            t:SetPoint("TOPLEFT", (i - 1) * (w + gap), 0)
+        end
+    end
+    function book:Show(name)
+        CloseMenu()
+        self.current = name
+        for _, n in ipairs(self.names) do
+            self.pages[n]:SetShown(n == name)
+            self.tabs[n]:SetActive(n == name)
+        end
+    end
+    book:Layout()
+    return book
+end
+
+-- A proc's page: a header that stays put while you scroll (back to the list,
+-- previous / next, its image, name and what it does, on / off and Preview)
+-- over five tabs:
+--   Alert  - when it shows, how long, its sound; reset or remove it
+--   Look   - its image, size, opacity, mirror and rotation
+--   Place  - where on screen: drag, snap, both sides
+--   Timer  - its countdown
+--   Stacks - stack dots (buffs only)
+-- The builders live in ProcUI to keep BuildProcPage under Lua 5.1's limits.
+local PROC_PAGES = { "Alert", "Look", "Place", "Timer", "Stacks" }
+local ProcUI = {}
+
+function ProcUI.Changed()
+    UpdatePreviewBox()
+    PreviewAfterChange(pageProc)
+end
+
+function ProcUI.Refresh()
+    for _, w in ipairs(procWidgets) do w:Refresh() end
+end
+
+function ProcUI.Slider(st, child, label, key, default, minV, maxV, step, fmt)
+    return st:Add(CreateSlider(child, label, minV, maxV, step, fmt,
+        function() return pageProc and PS(pageProc.key)[key] or default end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key)[key] = (v ~= default) and v or nil
+            ProcUI.Changed()
+        end, COL), 38)
+end
+
+function ProcUI.Header(page)
+    local back = CreateFlatButton(page, "< All procs", 96, 22, function() SelectView("LIST") end)
+    back:SetPoint("TOPLEFT", 4, -4)
+    local nextB = CreateFlatButton(page, ">", 26, 22, function() StepProc(1) end)
+    nextB:SetPoint("TOPRIGHT", -4, -4)
     AttachTooltip(nextB, "Next proc")
-    local prevB = CreateFlatButton(child, "<", 26, 22, function() StepProc(-1) end)
+    local prevB = CreateFlatButton(page, "<", 26, 22, function() StepProc(-1) end)
     prevB:SetPoint("RIGHT", nextB, "LEFT", -4, 0)
     AttachTooltip(prevB, "Previous proc")
 
-    -- Identity
-    local box = CreateFrame("Button", nil, child, "BackdropTemplate")
-    box:SetSize(92, 92)
+    local box = CreateFrame("Button", nil, page, "BackdropTemplate")
+    box:SetSize(70, 70)
+    box:SetPoint("TOPLEFT", 6, -34)
     Skin(box, 0.03, 0.03, 0.04, 1)
-    st:Add(box, 92, nil, 10)
     page.previewTex = box:CreateTexture(nil, "ARTWORK")
     page.previewTex:SetPoint("CENTER")
+    page.previewSize = 62
     box:SetScript("OnClick", function() imagePicker:Open() end)
     box:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(accentR, accentG, accentB, 1) end)
     box:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(BORDER_R, BORDER_G, BORDER_B, 1) end)
-    AttachTooltip(box, "Click to change image")
+    AttachTooltip(box, "Change image", "Click to pick another image for this alert.")
 
-    page.name = FS(child, "GameFontNormalLarge")
-    page.name:SetPoint("TOPLEFT", box, "TOPRIGHT", 12, -2)
-    page.name:SetPoint("RIGHT", child, "RIGHT", -PAD, 0)
+    page.name = FS(page, "GameFontNormalLarge")
+    page.name:SetPoint("TOPLEFT", box, "TOPRIGHT", 10, -1)
+    page.name:SetPoint("RIGHT", page, "RIGHT", -6, 0)
     page.name:SetJustifyH("LEFT")
-    page.kind = FS(child, "GameFontHighlightSmall")
-    page.kind:SetPoint("TOPLEFT", page.name, "BOTTOMLEFT", 0, -4)
-    page.kind:SetPoint("RIGHT", child, "RIGHT", -PAD, 0)
+    page.name:SetWordWrap(false)
+    page.kind = FS(page, "GameFontHighlightSmall")
+    page.kind:SetPoint("TOPLEFT", page.name, "BOTTOMLEFT", 0, -3)
+    page.kind:SetPoint("RIGHT", page, "RIGHT", -6, 0)
     page.kind:SetJustifyH("LEFT")
-    local enable = CreateCheck(child, "Enabled",
+    if page.kind.SetMaxLines then page.kind:SetMaxLines(2) end
+    local enable = CreateCheck(page, "Enabled",
         function() return pageProc and IsProcEnabled(pageProc) end,
         function(v)
             if not pageProc then return end
             SetProcEnabled(pageProc, v)
             ReevaluateAll()
         end)
-    enable:SetPoint("BOTTOMLEFT", box, "BOTTOMRIGHT", 12, 2)
+    enable:SetPoint("BOTTOMLEFT", box, "BOTTOMRIGHT", 8, -2)
     procWidgets[#procWidgets + 1] = enable
-
-    -- Actions
-    local bw = math.floor((COL - 12) / 3)
-    local test = st:Add(CreateFlatButton(child, "Preview", bw, 24, function()
+    local preview = CreateFlatButton(page, "Preview", 80, 22, function()
         if pageProc then TestProc(pageProc, 8) end
-    end), 24, nil, 14)
-    local changeImg = CreateFlatButton(child, "Image...", bw, 24, function() imagePicker:Open() end)
-    changeImg:SetPoint("LEFT", test, "RIGHT", 6, 0)
-    local resetProc = CreateFlatButton(child, "Reset", bw, 24, function()
-        if not pageProc then return end
-        ClassSettings()[pageProc.key] = nil
-        ReevaluateAll()
-        for _, w in ipairs(procWidgets) do w:Refresh() end
-        Changed()
     end)
-    resetProc:SetPoint("LEFT", changeImg, "RIGHT", 6, 0)
-    AttachTooltip(resetProc, "Reset this proc", "Puts every setting for this proc back to ProcDoc's default.")
+    preview:SetPoint("BOTTOMRIGHT", page, "TOPRIGHT", -6, -104)     -- level with Enabled
+    AttachTooltip(preview, "Preview", "Shows this alert on screen for 8 seconds.")
+end
 
-    -- Position: drag and drop on screen
-    st:Add(CreateHeader(child, "Position", COL), 18)
-    local how = st:Add(Label(child,
-        "Drag the alert on screen to move it.\nShift + mouse wheel over it to resize.\nRight-click any alert to open its settings."), 38, nil, 8)
-    how:SetJustifyH("LEFT")
-    local half = math.floor((COL - 6) / 2)
-    page.arrangeButton = st:Add(CreateFlatButton(child, "Show all to arrange", half, 24, function()
-        SetUnlocked(not unlockMode)
-    end), 24, nil, 10)
-    AttachTooltip(page.arrangeButton, "Show all alerts",
-        "Shows every enabled alert (with a centre guide) so you can drag them into place together.")
-    local resetPos = CreateFlatButton(child, "Reset position", half, 24, function()
-        if not pageProc then return end
-        local s = PSW(pageProc.key)
-        s.px, s.py, s.both, s.region = nil, nil, nil, nil
-        for _, w in ipairs(procWidgets) do w:Refresh() end
-        Changed()
-    end)
-    resetPos:SetPoint("LEFT", page.arrangeButton, "RIGHT", 6, 0)
-
-    -- Snap buttons: jump to a standard spot (then drag to fine-tune).
-    -- The spot also decides which way Auto rotation turns the art.
-    local function Snap(where)
-        if not pageProc then return end
-        local ps = PSW(pageProc.key)
-        local spot = StyleAnchors(where)[1]                     -- the same spots new alerts start at
-        ps.px, ps.py, ps.both = spot.x, spot.y, where == "SIDES"
-        ps.region = (where == "TOP" or where == "BOTTOM") and "TB" or "SIDE"
-        for _, w in ipairs(procWidgets) do w:Refresh() end
-        Changed()
-    end
-    st:Add(Label(child, "Snap to"), 12, nil, 4)
-    local snapW = math.floor((COL - 16) / 5)
-    local prevSnap
-    for _, spec in ipairs({ { "TOP", "Top", "Above your character" }, { "BOTTOM", "Bottom", "Below your character" },
-                            { "LEFT", "Left", "Left side" }, { "RIGHT", "Right", "Right side (mirrored to face outward)" },
-                            { "SIDES", "Sides", "Both sides: a mirrored left + right pair" } }) do
-        local b = CreateFlatButton(child, spec[2], snapW, 22, function() Snap(spec[1]) end)
-        AttachTooltip(b, "Snap: " .. spec[2], spec[3])
-        if prevSnap then b:SetPoint("LEFT", prevSnap, "RIGHT", 4, 0) else st:Add(b, 22, nil, 10) end
-        prevSnap = b
-    end
-    st:Add(CreateCheck(child, "Both sides (mirrored left + right)",
-        function() return pageProc and select(3, ProcPlacement(pageProc)) end,
-        function(v)
-            if not pageProc then return end
-            local defaultBoth = #StyleAnchors(pageProc.alertStyle or "SIDES") == 2
-            -- (not "cond and v or nil": that stores nil when v is false)
-            if v == defaultBoth then PSW(pageProc.key).both = nil else PSW(pageProc.key).both = v end
-            Changed()
-        end, "Shows the alert as a mirrored pair, one on each side of the screen. Dragging either one moves both."), 16, nil, 10)
-    st:Add(CreateCheck(child, "Mirror image",
-        function() return pageProc and PS(pageProc.key).flip end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).flip = v or nil
-            Changed()
-        end), 16, nil, 10)
-    st:Add(Label(child, "Rotation"), 12, nil, 4)
-    st:Add(CreateDropdown(child, COL, function() return ROTATION_OPTIONS end,
-        function() return pageProc and PS(pageProc.key).rotation or "auto" end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).rotation = (v ~= "auto") and v or nil
-            Changed()
-        end), 22, nil, 14)
-
-    -- Look
-    st:Add(CreateHeader(child, "Look", COL), 18)
-    PSlider("Size: 1.00x = real image size (or Shift + wheel)", "scale", LAYOUT.scale, 0.25, 4, 0.05,
-        function(v) return string.format("%.2fx", v) end)
-    PSlider("Opacity", "alpha", 1, 0.1, 1, 0.05,
-        function(v) return string.format("%d%%", math.floor(v * 100 + 0.5)) end)
-    st:Space(8)
-
-    -- Sound
-    st:Add(CreateHeader(child, "Sound", COL), 18)
-    local soundDD = st:Add(CreateDropdown(child, COL - 30, function() return SoundOptions(true) end,
-        function() return pageProc and PS(pageProc.key).sound or "default" end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).sound = (v ~= "default") and v or nil
-            PlaySoundKey(v == "default" and G.defaultSound or v)
-        end), 22, nil, 14)
-    local play = CreateFlatButton(child, ">", 24, 22, function()
-        if pageProc then PlaySoundKey(PS(pageProc.key).sound or G.defaultSound) end
-    end)
-    play:SetPoint("LEFT", soundDD, "RIGHT", 6, 0)
-    AttachTooltip(play, "Play sound")
-
-    -- Countdown
-    st:Add(CreateHeader(child, "Countdown", COL), 18)
-    local thow = st:Add(Label(child,
-        "Drag the number on screen to move it.\nShift + mouse wheel over it to resize it."), 26, nil, 8)
-    thow:SetJustifyH("LEFT")
-    st:Add(Label(child, "Show countdown"), 12, nil, 4)
-    st:Add(CreateDropdown(child, COL, function() return TIMER_OPTIONS end,
-        function() return pageProc and PS(pageProc.key).timer or "default" end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).timer = (v ~= "default") and v or nil
-            Changed()
-        end), 22, nil, 10)
-    st:Add(CreateSlider(child, "Text size", 6, 80, 1,
-        function(v) return string.format("%d", math.floor(v + 0.5)) end,
-        function()
-            if not pageProc then return 26 end
-            local _, size = TimerFont(pageProc, (PS(pageProc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
-            return size
-        end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).timerSize = math.floor(v + 0.5)
-            Changed()
-        end, COL), 38)
-    st:Add(Label(child, "Color"), 12, nil, 4)
-    st:Add(CreateDropdown(child, COL, function()
-            local def = COLOR_BY_KEY[G.timerColor] or COLOR_BY_KEY.gold
-            local out = { { value = "default", label = "Default (" .. def.label .. ")" } }
-            for _, c in ipairs(COLOR_CHOICES) do out[#out + 1] = { value = c.value, label = c.label } end
-            return out
-        end,
-        function() return pageProc and PS(pageProc.key).timerColor or "default" end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).timerColor = (v ~= "default") and v or nil
-            Changed()
-        end), 22, nil, 10)
-    st:Add(CreateCheck(child, "On one side only (for pairs)",
-        function() return pageProc and PS(pageProc.key).timerOneSide end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).timerOneSide = v or nil
-            Changed()
-        end), 16, nil, 10)
-    st:Add(CreateFlatButton(child, "Reset countdown", 130, 24, function()
-        if not pageProc then return end
-        local s = PSW(pageProc.key)
-        s.timerX, s.timerY, s.timerSize, s.timerColor, s.timerOneSide = nil, nil, nil, nil, nil
-        for _, w in ipairs(procWidgets) do w:Refresh() end
-        Changed()
-    end), 24, nil, 10)
-    -- Buff procs get a Stacks section; reaction abilities get the reaction
-    -- window slider in the same spot (BindProcPage shows the one that fits).
-    -- What the alert follows: the buff showing up (a proc), the buff missing
-    -- (a reminder), or, for spells the player casts (their own procs and the
-    -- Cooldown Manager's), the ability being ready to use or coming off
-    -- cooldown (it then works like the reaction abilities). Built-in procs
-    -- keep what they are: buffs can be a reminder, reaction abilities have
-    -- the one choice.
+-- Alert: what it follows (the buff showing up, the buff missing, or, for
+-- spells the player casts (their own procs and the Cooldown Manager's), the
+-- ability being ready to use or on cooldown; built-in reaction abilities
+-- have the one choice), how long an ability's alert stays up, and its sound
+function ProcUI.Alert(page, st, child)
     local function Castable(p)
         if not (p.custom or p.cdm) then return false end
         local id = p.spellID or (p.spellIDs and p.spellIDs[1])
@@ -5145,26 +5173,219 @@ local function BuildProcPage(parent)
             end
             procPage.kind:SetText(ProcKindText(pageProc))
             ReevaluateAll()
+        end), 22, nil, 10)
+
+    -- how long it stays up (abilities), or a word on cooldown alerts; the
+    -- rest of the page moves up when neither applies (BindProcPage)
+    page.slotY = st.y
+    page.durationSlider = st:Add(CreateSlider(child, "Show for (seconds; 0 = until you use it)", 0, 20, 0.5,
+        function(v) return v < 0.25 and "until used" or string.format("%.1fs", v) end,
+        function() return pageProc and GetActionProcDuration(pageProc) or 0 end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).duration = (v < 0.25) and 0 or v
+        end, COL), 38)
+    st.y = page.slotY
+    page.cooldownNote = st:Add(Label(child,
+        "A cooldown alert stays up as long as the cooldown,\ncounting down until it's back."), 26, nil, 8)
+    page.cooldownNote:SetJustifyH("LEFT")
+
+    local rest = CreateFrame("Frame", nil, child)
+    rest:SetSize(CHILD_W, 10)
+    local rs = Stack({ child = rest, SetContentHeight = function() end }, procWidgets)
+    rs.y = -4
+    rs:Add(CreateHeader(rest, "Sound", COL), 18)
+    local soundDD = rs:Add(CreateDropdown(rest, COL - 30, function() return SoundOptions(true) end,
+        function() return pageProc and PS(pageProc.key).sound or "default" end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).sound = (v ~= "default") and v or nil
+            PlaySoundKey(v == "default" and G.defaultSound or v)
         end), 22, nil, 14)
+    local play = CreateFlatButton(rest, ">", 24, 22, function()
+        if pageProc then PlaySoundKey(PS(pageProc.key).sound or G.defaultSound) end
+    end)
+    play:SetPoint("LEFT", soundDD, "RIGHT", 6, 0)
+    AttachTooltip(play, "Play sound")
 
-    local slotY = st.y
-    page.stackWidgets = {}
-    local function S(widget, height, x, gap)
-        page.stackWidgets[#page.stackWidgets + 1] = widget
-        return st:Add(widget, height, x, gap)
+    rs:Add(CreateHeader(rest, "This proc", COL), 18)
+    local half = math.floor((COL - 6) / 2)
+    local resetProc = rs:Add(CreateFlatButton(rest, "Reset to default", half, 24, function()
+        if not pageProc then return end
+        ClassSettings()[pageProc.key] = nil
+        ReevaluateAll()
+        ProcUI.Refresh()
+        ProcUI.Changed()
+    end), 24, nil, 10)
+    AttachTooltip(resetProc, "Reset this proc", "Puts every setting for this proc back to ProcDoc's default.")
+    page.removeButton = CreateFlatButton(rest, "Remove from list", half, 24, function()
+        if not pageProc or not (pageProc.custom or pageProc.auto) then return end
+        local name = pageProc.buffName
+        RemoveListedProc(pageProc)
+        pageProc = nil
+        Print("removed " .. name .. " from your procs.")
+        SelectView("LIST")
+    end)
+    page.removeButton:SetPoint("LEFT", resetProc, "RIGHT", 6, 0)
+    AttachTooltip(page.removeButton, "Remove from list", "For procs you added or that were auto-detected.")
+    page.rest, page.restHeight = rest, -rs.y
+end
+
+-- Look: image, size, opacity, mirror and rotation
+function ProcUI.Look(page, st, child)
+    st:Add(CreateHeader(child, "Image", COL), 18)
+    st:Add(CreateFlatButton(child, "Change image...", 130, 24, function() imagePicker:Open() end), 24, nil, 6)
+    local tip = st:Add(Label(child, "Or click the picture at the top. Hover one in the\npicker to try it on the alert."), 26, nil, 10)
+    tip:SetJustifyH("LEFT")
+    st:Add(CreateHeader(child, "Size and opacity", COL), 18)
+    ProcUI.Slider(st, child, "Size: 1.00x = real image size (or Shift + wheel)", "scale", LAYOUT.scale, 0.25, 4, 0.05,
+        function(v) return string.format("%.2fx", v) end)
+    ProcUI.Slider(st, child, "Opacity", "alpha", 1, 0.1, 1, 0.05,
+        function(v) return string.format("%d%%", math.floor(v * 100 + 0.5)) end)
+    st:Space(8)
+    st:Add(CreateHeader(child, "Turn and flip", COL), 18)
+    st:Add(CreateCheck(child, "Mirror image",
+        function() return pageProc and PS(pageProc.key).flip end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).flip = v or nil
+            ProcUI.Changed()
+        end), 16, nil, 10)
+    st:Add(Label(child, "Rotation"), 12, nil, 4)
+    st:Add(CreateDropdown(child, COL, function() return ROTATION_OPTIONS end,
+        function() return pageProc and PS(pageProc.key).rotation or "auto" end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).rotation = (v ~= "auto") and v or nil
+            ProcUI.Changed()
+        end), 22, nil, 14)
+    st:Finish()
+end
+
+-- Place: where it shows on screen
+function ProcUI.Place(page, st, child)
+    st:Add(CreateHeader(child, "On screen", COL), 18)
+    local how = st:Add(Label(child,
+        "Drag the alert on screen to move it.\nShift + mouse wheel over it to resize.\nRight-click any alert to open its settings."), 38, nil, 10)
+    how:SetJustifyH("LEFT")
+
+    -- Snap buttons: jump to a standard spot (then drag to fine-tune).
+    -- The spot also decides which way Auto rotation turns the art.
+    local function Snap(where)
+        if not pageProc then return end
+        local ps = PSW(pageProc.key)
+        local spot = StyleAnchors(where)[1]                     -- the same spots new alerts start at
+        ps.px, ps.py, ps.both = spot.x, spot.y, where == "SIDES"
+        ps.region = (where == "TOP" or where == "BOTTOM") and "TB" or "SIDE"
+        ProcUI.Refresh()
+        ProcUI.Changed()
     end
+    st:Add(Label(child, "Snap to"), 12, nil, 4)
+    local snapW = math.floor((COL - 16) / 5)
+    local prevSnap
+    for _, spec in ipairs({ { "TOP", "Top", "Above your character" }, { "BOTTOM", "Bottom", "Below your character" },
+                            { "LEFT", "Left", "Left side" }, { "RIGHT", "Right", "Right side (mirrored to face outward)" },
+                            { "SIDES", "Sides", "Both sides: a mirrored left + right pair" } }) do
+        local b = CreateFlatButton(child, spec[2], snapW, 22, function() Snap(spec[1]) end)
+        AttachTooltip(b, "Snap: " .. spec[2], spec[3])
+        if prevSnap then b:SetPoint("LEFT", prevSnap, "RIGHT", 4, 0) else st:Add(b, 22, nil, 10) end
+        prevSnap = b
+    end
+    st:Add(CreateCheck(child, "Both sides (mirrored left + right)",
+        function() return pageProc and select(3, ProcPlacement(pageProc)) end,
+        function(v)
+            if not pageProc then return end
+            local defaultBoth = #StyleAnchors(pageProc.alertStyle or "SIDES") == 2
+            -- (not "cond and v or nil": that stores nil when v is false)
+            if v == defaultBoth then PSW(pageProc.key).both = nil else PSW(pageProc.key).both = v end
+            ProcUI.Changed()
+        end, "Shows the alert as a mirrored pair, one on each side of the screen. Dragging either one moves both."), 16, nil, 14)
+    local half = math.floor((COL - 6) / 2)
+    page.arrangeButton = st:Add(CreateFlatButton(child, "Show all to arrange", half, 24, function()
+        SetUnlocked(not unlockMode)
+    end), 24, nil, 10)
+    AttachTooltip(page.arrangeButton, "Show all alerts",
+        "Shows every enabled alert (with a centre guide) so you can drag them into place together.")
+    local resetPos = CreateFlatButton(child, "Reset position", half, 24, function()
+        if not pageProc then return end
+        local s = PSW(pageProc.key)
+        s.px, s.py, s.both, s.region = nil, nil, nil, nil
+        ProcUI.Refresh()
+        ProcUI.Changed()
+    end)
+    resetPos:SetPoint("LEFT", page.arrangeButton, "RIGHT", 6, 0)
+    st:Finish()
+end
 
-    S(CreateHeader(child, "Stacks", COL), 18)
-    local show = S(Label(child, "For buffs that stack. Dots show how many stacks you\nhave; drag them on screen, Shift + wheel to resize."), 26, nil, 8)
+-- Timer: its countdown
+function ProcUI.Timer(page, st, child)
+    st:Add(CreateHeader(child, "Countdown", COL), 18)
+    local thow = st:Add(Label(child,
+        "Drag the number on screen to move it.\nShift + mouse wheel over it to resize it."), 26, nil, 8)
+    thow:SetJustifyH("LEFT")
+    st:Add(Label(child, "Show countdown"), 12, nil, 4)
+    st:Add(CreateDropdown(child, COL, function() return TIMER_OPTIONS end,
+        function() return pageProc and PS(pageProc.key).timer or "default" end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).timer = (v ~= "default") and v or nil
+            ProcUI.Changed()
+        end), 22, nil, 10)
+    st:Add(CreateSlider(child, "Text size", 6, 80, 1,
+        function(v) return string.format("%d", math.floor(v + 0.5)) end,
+        function()
+            if not pageProc then return 26 end
+            local _, size = TimerFont(pageProc, (PS(pageProc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
+            return size
+        end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).timerSize = math.floor(v + 0.5)
+            ProcUI.Changed()
+        end, COL), 38)
+    st:Add(Label(child, "Color"), 12, nil, 4)
+    st:Add(CreateDropdown(child, COL, function()
+            local def = COLOR_BY_KEY[G.timerColor] or COLOR_BY_KEY.gold
+            local out = { { value = "default", label = "Default (" .. def.label .. ")" } }
+            for _, c in ipairs(COLOR_CHOICES) do out[#out + 1] = { value = c.value, label = c.label } end
+            return out
+        end,
+        function() return pageProc and PS(pageProc.key).timerColor or "default" end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).timerColor = (v ~= "default") and v or nil
+            ProcUI.Changed()
+        end), 22, nil, 10)
+    st:Add(CreateCheck(child, "On one side only (for pairs)",
+        function() return pageProc and PS(pageProc.key).timerOneSide end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).timerOneSide = v or nil
+            ProcUI.Changed()
+        end), 16, nil, 14)
+    st:Add(CreateFlatButton(child, "Reset countdown", 130, 24, function()
+        if not pageProc then return end
+        local s = PSW(pageProc.key)
+        s.timerX, s.timerY, s.timerSize, s.timerColor, s.timerOneSide = nil, nil, nil, nil, nil
+        ProcUI.Refresh()
+        ProcUI.Changed()
+    end), 24, nil, 10)
+    st:Finish()
+end
+
+-- Stacks: the dots for buffs that stack (hidden for abilities)
+function ProcUI.Stacks(page, st, child)
+    st:Add(CreateHeader(child, "Stacks", COL), 18)
+    local show = st:Add(Label(child, "For buffs that stack. Dots show how many stacks you\nhave; drag them on screen, Shift + wheel to resize."), 26, nil, 8)
     show:SetJustifyH("LEFT")
-    S(CreateCheck(child, "Show stack dots",
+    st:Add(CreateCheck(child, "Show stack dots",
         function() return pageProc and PS(pageProc.key).stackDots ~= false end,
         function(v)
             if not pageProc then return end
             if v then PSW(pageProc.key).stackDots = nil else PSW(pageProc.key).stackDots = false end
-            Changed()
+            ProcUI.Changed()
         end), 16, nil, 10)
-    S(CreateSlider(child, "Show the alert at (stacks)", 1, 20, 1,
+    st:Add(CreateSlider(child, "Show the alert at (stacks)", 1, 20, 1,
         function(v) v = math.floor(v + 0.5); return v <= 1 and "any" or tostring(v) end,
         function() return pageProc and (PS(pageProc.key).minStacks or pageProc.minStacks) or 1 end,
         function(v)
@@ -5173,17 +5394,17 @@ local function BuildProcPage(parent)
             PSW(pageProc.key).minStacks = (v > 1) and v or nil
             if CheckProcs then CheckProcs() end
         end, COL), 38)
-    S(CreateSlider(child, "Number of dots (0 = most stacks seen)", 0, 20, 1,
+    st:Add(CreateSlider(child, "Number of dots (0 = most stacks seen)", 0, 20, 1,
         function(v) v = math.floor(v + 0.5); return v == 0 and ("auto" .. ((pageProc and pageProc.maxSeen) and (" (" .. pageProc.maxSeen .. ")") or "")) or tostring(v) end,
         function() return pageProc and PS(pageProc.key).maxStacks or 0 end,
         function(v)
             if not pageProc then return end
             v = math.floor(v + 0.5)
             PSW(pageProc.key).maxStacks = (v > 0) and v or nil
-            Changed()
+            ProcUI.Changed()
         end, COL), 38)
-    S(Label(child, "Dot color"), 12, nil, 4)
-    S(CreateDropdown(child, COL, function()
+    st:Add(Label(child, "Dot color"), 12, nil, 4)
+    st:Add(CreateDropdown(child, COL, function()
             local out = {}
             for _, c in ipairs(COLOR_CHOICES) do out[#out + 1] = { value = c.value, label = c.label } end
             return out
@@ -5192,9 +5413,9 @@ local function BuildProcPage(parent)
         function(v)
             if not pageProc then return end
             PSW(pageProc.key).pipColor = (v ~= "gold") and v or nil
-            Changed()
+            ProcUI.Changed()
         end), 22, nil, 10)
-    S(CreateCheck(child, "One side per stack (for pairs)",
+    st:Add(CreateCheck(child, "One side per stack (for pairs)",
         function()
             if not pageProc then return false end
             local v = PS(pageProc.key).sidesByStacks
@@ -5205,16 +5426,16 @@ local function BuildProcPage(parent)
             if not pageProc then return end
             local default = pageProc.sidesByStacks and true or false
             if v == default then PSW(pageProc.key).sidesByStacks = nil else PSW(pageProc.key).sidesByStacks = v end
-            Changed()
+            ProcUI.Changed()
         end, "With Both sides on: the first side shows at 1 stack and the second joins at 2."), 16, nil, 10)
-    S(CreateCheck(child, "Dots on one side only (for pairs)",
+    st:Add(CreateCheck(child, "Dots on one side only (for pairs)",
         function() return pageProc and PS(pageProc.key).pipOneSide end,
         function(v)
             if not pageProc then return end
             PSW(pageProc.key).pipOneSide = v or nil
-            Changed()
-        end), 16, nil, 10)
-    local testStacks = S(CreateFlatButton(child, "Test stacks", 110, 24, function()
+            ProcUI.Changed()
+        end), 16, nil, 14)
+    local testStacks = st:Add(CreateFlatButton(child, "Test stacks", 110, 24, function()
         if pageProc then RunStackTest(pageProc) end
     end), 24, nil, 10)
     AttachTooltip(testStacks, "Test stacks",
@@ -5223,65 +5444,77 @@ local function BuildProcPage(parent)
         if not pageProc then return end
         local ps = PSW(pageProc.key)
         ps.pipX, ps.pipY, ps.pipSize, ps.pipColor, ps.pipOneSide = nil, nil, nil, nil, nil
-        for _, w in ipairs(procWidgets) do w:Refresh() end
-        Changed()
+        ProcUI.Refresh()
+        ProcUI.Changed()
     end)
     resetDots:SetPoint("LEFT", testStacks, "RIGHT", 6, 0)
-    page.stackWidgets[#page.stackWidgets + 1] = resetDots
-    page.yStacksEnd = st.y
+    st:Finish()
+end
 
-    st.y = slotY
-    page.durationSlider = st:Add(CreateSlider(child, "Show for (seconds; 0 = until you use it)", 0, 20, 0.5,
-        function(v) return v < 0.25 and "until used" or string.format("%.1fs", v) end,
-        function() return pageProc and GetActionProcDuration(pageProc) or 0 end,
-        function(v)
-            if not pageProc then return end
-            PSW(pageProc.key).duration = (v < 0.25) and 0 or v
-        end, COL), 38)
-    page.yWithDuration = st.y
-
-    -- Only for custom / auto-detected procs; placed at the end in BindProcPage
-    page.removeButton = CreateFlatButton(child, "Remove from list", 140, 24, function()
-        if not pageProc or not (pageProc.custom or pageProc.auto) then return end
-        local name = pageProc.buffName
-        RemoveListedProc(pageProc)
-        pageProc = nil
-        Print("removed " .. name .. " from your procs.")
-        SelectView("LIST")
-    end)
+local function BuildProcPage(parent)
+    local page = CreateFrame("Frame", nil, parent)
+    page:SetAllPoints()
+    page:Hide()
+    ProcUI.Header(page)
+    local book = CreateSubPages(page, PROC_PAGES, 112)
+    page.book = book
+    for _, name in ipairs(PROC_PAGES) do
+        local sub = book.pages[name]
+        ProcUI[name](page, Stack(sub, procWidgets), sub.child)
+    end
+    book:Show("Alert")
     return page
 end
 
-local function BindProcPage(scrollTop)
+-- Fills the page in for pageProc. The tab you were on stays open when you
+-- go to another proc (Stacks falls back to Alert for an ability).
+local function BindProcPage(changed)
     if not pageProc then return end
-    procPage.name:SetText(pageProc.buffName)
-    procPage.kind:SetText(ProcKindText(pageProc))
-    local isAction = pageProc.isAction and true or false
-    procPage.durationSlider:SetShown(isAction and not pageProc.cdOnly)     -- (a cooldown alert lasts the cooldown)
-    for _, w in ipairs(procPage.stackWidgets) do w:SetShown(not isAction) end
-    local y = isAction and procPage.yWithDuration or procPage.yStacksEnd
-    local removable = (pageProc.custom or pageProc.auto) and true or false
-    procPage.removeButton:SetShown(removable)
-    if removable then
-        procPage.removeButton:ClearAllPoints()
-        procPage.removeButton:SetPoint("TOPLEFT", procPage.child, "TOPLEFT", PAD, y - 4)
-        y = y - 34
+    local page, p, book = procPage, pageProc, procPage.book
+    page.name:SetText(p.buffName)
+    page.kind:SetText(ProcKindText(p))
+    local isAction = p.isAction and true or false
+    local timed = isAction and not p.cdOnly                    -- (a cooldown alert lasts the cooldown)
+    page.durationSlider:SetShown(timed)
+    page.cooldownNote:SetShown(isAction and not timed)
+    local alert = book.pages.Alert
+    local y = page.slotY - (timed and 44 or (isAction and 34 or 0))
+    page.rest:ClearAllPoints()
+    page.rest:SetPoint("TOPLEFT", alert.child, "TOPLEFT", 0, y)
+    alert:SetContentHeight(-y + page.restHeight + 12)
+    page.removeButton:SetShown((p.custom or p.auto) and true or false)
+    book.tabs.Stacks:SetShown(not isAction)                    -- stack dots are for buffs
+    book:Layout()
+    if isAction and book.current == "Stacks" then book:Show("Alert") end
+    if changed then
+        for _, n in ipairs(PROC_PAGES) do book.pages[n]:ScrollToTop() end
     end
-    procPage.arrangeButton.text:SetText(unlockMode and "Done arranging" or "Show all to arrange")
-    procPage:SetContentHeight(-y + 12)
-    for _, w in ipairs(procWidgets) do w:Refresh() end
+    page.arrangeButton.text:SetText(unlockMode and "Done arranging" or "Show all to arrange")
+    ProcUI.Refresh()
     UpdatePreviewBox()
-    if scrollTop then procPage:ScrollToTop() end
 end
 
--- General tab -------------------------------------------------------------
+-- Settings tab ------------------------------------------------------------
+-- Four pages, picked from a row of tabs at the top: Alerts (size, placing and
+-- how they move), Timers, Sound, and Setup (detection, Blizzard's Cooldown
+-- Manager, this window, reset). Every control is in generalWidgets, so they
+-- all refresh together.
 local ApplyPanelGeometry -- forward
 
+local SETTINGS_PAGES = { "Alerts", "Timers", "Sound", "Setup" }
+
 local function BuildGeneralPage(parent)
-    local page = CreateScrollPage(parent)
+    local page = CreateFrame("Frame", nil, parent)
+    page:SetAllPoints()
     page:Hide()
-    local child = page.child
-    local st = Stack(page, generalWidgets)
+    local book = CreateSubPages(page, SETTINGS_PAGES, 2)
+
+    -- the page being filled in, and its stack
+    local child, st
+    local function Fill(name)
+        local sub = book.pages[name]
+        child, st = sub.child, Stack(sub, generalWidgets)
+    end
 
     local function GSlider(label, key, minV, maxV, step, fmt, after, noPreview)
         return st:Add(CreateSlider(child, label, minV, maxV, step, fmt,
@@ -5296,7 +5529,34 @@ local function BuildGeneralPage(parent)
     local mult = function(v) return string.format("%.2fx", v) end
     local px   = function(v) return string.format("%d", math.floor(v + 0.5)) end
 
-    st:Add(CreateHeader(child, "Pulse animation", COL), 18)
+    local function GDropdown(label, key, choices, after)
+        st:Add(Label(child, label), 12, nil, 4)
+        return st:Add(CreateDropdown(child, COL, function() return choices end,
+            function() return G[key] end,
+            function(v)
+                G[key] = v
+                if after then after(v) end
+                RefreshAllAlerts()
+                PreviewAfterChange(nil)
+            end), 22, nil, 10)
+    end
+
+
+    -- Alerts: how big, where, and how they move
+    Fill("Alerts")
+    st:Add(CreateHeader(child, "Size and placing", COL), 18)
+    GSlider("Scale of every alert", "masterScale", 0.5, 2, 0.05, mult)
+    local where = st:Add(Label(child,
+        "Move and resize alerts right on screen: drag them, and\nShift + mouse wheel over one to resize it."), 26, nil, 8)
+    where:SetJustifyH("LEFT")
+    local arrange
+    arrange = st:Add(CreateFlatButton(child, "Show all to arrange", 150, 24, function()
+        SetUnlocked(not unlockMode)
+        arrange.text:SetText(unlockMode and "Done arranging" or "Show all to arrange")
+    end), 24, nil, 14)
+
+    st:Space(8)
+    st:Add(CreateHeader(child, "Pulse", COL), 18)
     GSlider("Faintest opacity", "minAlpha", 0, 1, 0.05, pct,
         function(v) if G.maxAlpha < v then G.maxAlpha = v end end)
     GSlider("Brightest opacity", "maxAlpha", 0, 1, 0.05, pct,
@@ -5306,6 +5566,8 @@ local function BuildGeneralPage(parent)
     GSlider("Largest size", "maxScale", 0.5, 2, 0.05, mult,
         function(v) if G.minScale > v then G.minScale = v end end)
     GSlider("Pulse speed", "pulseSpeed", 0.1, 3, 0.1, function(v) return string.format("%.1f", v) end)
+    st:Space(8)
+    st:Add(CreateHeader(child, "When a proc starts and ends", COL), 18)
     st:Add(CreateCheck(child, "Pop in when a proc starts",
         function() return G.popEnabled ~= false end,
         function(v)
@@ -5320,31 +5582,10 @@ local function BuildGeneralPage(parent)
         function(v) G.exitEnabled = v end,
         "When a proc is used or runs out, the alert quickly shrinks away instead of just vanishing."), 16, nil, 10)
     st:Add(CreateFlatButton(child, "Replay animation", 150, 24, function() TestAll(0.9) end), 24, nil, 14)
-    st:Space(8)
+    st:Finish()
 
-    st:Add(CreateHeader(child, "Alerts", COL), 18)
-    GSlider("Scale of every alert", "masterScale", 0.5, 2, 0.05, mult)
-    local where = st:Add(Label(child,
-        "Move and resize alerts right on screen: drag them, and\nShift + mouse wheel over one to resize it."), 26, nil, 8)
-    where:SetJustifyH("LEFT")
-    local arrange
-    arrange = st:Add(CreateFlatButton(child, "Show all to arrange", 150, 24, function()
-        SetUnlocked(not unlockMode)
-        arrange.text:SetText(unlockMode and "Done arranging" or "Show all to arrange")
-    end), 24, nil, 14)
-
-    local function GDropdown(label, key, choices, after)
-        st:Add(Label(child, label), 12, nil, 4)
-        return st:Add(CreateDropdown(child, COL, function() return choices end,
-            function() return G[key] end,
-            function(v)
-                G[key] = v
-                if after then after(v) end
-                RefreshAllAlerts()
-                PreviewAfterChange(nil)
-            end), 22, nil, 10)
-    end
-
+    -- Timers: the countdown on every alert
+    Fill("Timers")
     st:Add(CreateHeader(child, "Countdown timers", COL), 18)
     st:Add(CreateCheck(child, "Show countdown timers",
         function() return not G.disableTimers end,
@@ -5363,6 +5604,10 @@ local function BuildGeneralPage(parent)
         function() return G.timerDecimals ~= false end,
         function(v) G.timerDecimals = v end), 16, nil, 14)
 
+    st:Finish()
+
+    -- Sound
+    Fill("Sound")
     st:Add(CreateHeader(child, "Sound", COL), 18)
     st:Add(CreateCheck(child, "Mute all proc sounds",
         function() return G.isMuted end,
@@ -5379,6 +5624,10 @@ local function BuildGeneralPage(parent)
         function() return G.soundChannel end,
         function(v) G.soundChannel = v; PlaySoundKey(G.defaultSound) end), 22, nil, 14)
 
+    st:Finish()
+
+    -- Setup: what ProcDoc watches, Blizzard's Cooldown Manager, this window
+    Fill("Setup")
     st:Add(CreateHeader(child, "Detection", COL), 18)
     st:Add(CreateCheck(child, "Auto-detect other procs",
         function() return G.autoDetect end,
@@ -5418,6 +5667,7 @@ local function BuildGeneralPage(parent)
     menuScale.slider:HookScript("OnMouseUp", function() ApplyPanelGeometry() end)
     st:Add(Label(child, "Drag the title bar to move this window; it remembers\nwhere you leave it. The dock button snaps it to an\nedge. Scale applies when you release the slider."), 38, nil, 14)
 
+    st:Space(8)
     local reset
     reset = st:Add(CreateFlatButton(child, "Reset all settings", 150, 24, function()
         if not reset.armed then
@@ -5440,6 +5690,8 @@ local function BuildGeneralPage(parent)
         Print("all settings reset to defaults.")
     end), 24)
     st:Finish()
+
+    book:Show("Alerts")
     return page
 end
 
@@ -5610,16 +5862,6 @@ end
 -- Window ------------------------------------------------------------------
 -- A tab: a red panel button, bright with gold text when it's the open one,
 -- dimmed with grey text when it isn't
-local function CreateTab(parent, text, onClick)
-    local b = CreateFlatButton(parent, text, 120, 24, onClick)
-    b.SetActive = function(self, on)
-        local v = on and 1 or 0.5
-        for _, t in ipairs(self.art) do t:SetVertexColor(v, v, v) end
-        self.text:SetFontObject(on and "GameFontNormal" or "GameFontDisable")
-    end
-    return b
-end
-
 -- Is the window on the right half (saved spot) or docked right?
 local function PanelOnRight()
     if G.menuX then return G.menuX > 0 end
@@ -5858,7 +6100,7 @@ local function BuildOptionsFrame()
     end
     local function GeneralTab() SelectView("GENERAL") end
     tabProcs = standard and CreateStandardTab(f, 1, "Procs", ProcsTab)
-    tabGeneral = tabProcs and CreateStandardTab(f, 2, "General", GeneralTab)
+    tabGeneral = tabProcs and CreateStandardTab(f, 2, "Settings", GeneralTab)
     local tabs
     if tabProcs and tabGeneral then
         tabProcs:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 12, 2)
@@ -5872,7 +6114,7 @@ local function BuildOptionsFrame()
         tabProcs = CreateTab(tabs, "Procs", ProcsTab)
         tabProcs:SetPoint("TOPLEFT")
         tabProcs:SetPoint("BOTTOMRIGHT", tabs, "BOTTOM", -2, 0)
-        tabGeneral = CreateTab(tabs, "General", GeneralTab)
+        tabGeneral = CreateTab(tabs, "Settings", GeneralTab)
         tabGeneral:SetPoint("TOPLEFT", tabs, "TOP", 2, 0)
         tabGeneral:SetPoint("BOTTOMRIGHT")
         local tabRule = f:CreateTexture(nil, "ARTWORK")
