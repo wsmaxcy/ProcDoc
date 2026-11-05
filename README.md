@@ -119,7 +119,7 @@ Original images made for ProcDoc in the same glowing style, ready in the image p
 | Fel Flame | side | Warlock |
 | Demon Fire Arc | top | Warlock (Decimation, Soul Fire) |
 | Shadow Wisps | side | Warlock, shadow Priest, Rogue |
-| Crimson Claws | side | Rogue (Cutthroat), Hunter, feral Druid |
+| Crimson Claws | side | Hunter, feral Druid |
 | Venom Drip | side | Rogue (poisons), Hunter |
 | Storm Arc | top | Shaman |
 | Storm Vortex Arc | top | Shaman |
@@ -143,12 +143,12 @@ ProcDoc only alerts on **reaction** procs, meaning something just happened that 
 | Class | Built-in procs |
 | --- | --- |
 | Warlock | Shadow Trance (Nightfall), Decimation |
-| Mage | Clearcasting, Missile Barrage, Fingers of Frost (left side at 1 stack, both sides at 2), Heating Up (with stack dots), Wake of Fire (lights up on your killing blow) |
+| Mage | Clearcasting, Missile Barrage (Arcane Missiles keeps your Clearcasting while it's up), Fingers of Frost (left side at 1 stack, both sides at 2), Heating Up (with stack dots), Wake of Fire (lights up on your killing blow) |
 | Druid | Clearcasting, Nature's Grace, Eclipse (with charge dots) |
 | Shaman | Clearcasting (Elemental Focus), Flurry, Maelstrom Weapon (the lightning builds with your stacks: stage 1 to 4, then wings at 5) |
 | Hunter | Quick Shots (Deadly Aspects), Rapid Killing, Counterattack, Mongoose Bite (10 sec window, for Expose Prey) |
 | Warrior | Enrage, Overpower (in any stance), Revenge |
-| Rogue | Remorseless Attacks, Cutthroat, Riposte |
+| Rogue | Remorseless Attacks (spent by Mutilate too), Riposte |
 | Priest | Searing Light (free Holy Nova) |
 | Paladin | Infusion of Light (faster Holy Light) |
 
@@ -160,7 +160,7 @@ Anything Forever adds is caught by **auto-detect** if the game shows its own pro
 
 When the Cooldown Manager is watching a proc, that's all ProcDoc goes by in combat; its other tricks (like spotting Remorseless from your killing blow) are only a backup for procs it can't see. Reaction abilities like Overpower and Riposte use the game's own "usable" state, the same thing that lights up their Cooldown Manager icon.
 
-**Every Cooldown Manager spell is in your list.** The Procs tab has a section with every other spell from your class's Cooldown Manager lists, switched off. Tick any of them to get an alert. Buffs on you (Slice and Dice) light up while you have them. Abilities with a cooldown (Kick, Gouge) show while they're on cooldown, counting down until they're back. Abilities without one (Rupture, Garrote) show while they're available to use (a moment short of energy still counts, so it doesn't flash every time you spend some). It all works in and out of combat: in combat, when the game hides cooldowns, ProcDoc counts from your cast (and reads the Cooldown Manager's icon when it can't). Change it on the spell's page under **Alert me when**, just like your own procs: a buff can be a reminder when it's missing, and an ability can switch between "on cooldown" and "available". No need to add them by hand (a ticked buff is added to Tracked Buffs at your next `/reload` too).
+**Every Cooldown Manager spell is in your list.** The Procs tab lists your built-in procs and every other spell from your class's Cooldown Manager together, in one list (the Cooldown Manager ones start switched off). Tick any of them to get an alert: ticked procs stay at the top, in the order you ticked them. Unticking one leaves it in place until you tick something else, so the list doesn't jump while you work. Buffs on you (Slice and Dice) light up while you have them. Abilities with a cooldown (Kick, Gouge) show while they're on cooldown, counting down until they're back. Abilities without one (Rupture, Garrote) show while they're available to use (a moment short of energy still counts, so it doesn't flash every time you spend some). It all works in and out of combat: in combat, when the game hides cooldowns, ProcDoc counts from your cast (and reads the Cooldown Manager's icon when it can't). Change it on the spell's page under **Alert me when**, just like your own procs: a buff can be a reminder when it's missing, and an ability can switch between "on cooldown" and "available". No need to add them by hand (a ticked buff is added to Tracked Buffs at your next `/reload` too).
 
 ---
 

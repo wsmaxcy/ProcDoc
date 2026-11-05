@@ -360,6 +360,7 @@ local PROC_DATA = {
             alertTexturePath = IMG .. "WhiteStarburst.tga",
             alertStyle       = "TOP",
             consumedBy       = "ANY",
+            keptDuring       = { ["Arcane Missiles"] = "Missile Barrage" }, -- not spent while that's up (Forever launch)
         },
         {
             buffName         = "Missile Barrage", -- instant Arcane Missiles
@@ -498,18 +499,13 @@ local PROC_DATA = {
             texture          = "Interface\\Icons\\Ability_FeignDeath",
             alertTexturePath = IMG .. "SmallRedSlash.tga",
             alertStyle       = "SIDES",
-            consumedBy       = { "Sinister Strike", "Backstab", "Hemorrhage", "Ambush", "Riposte", "Ghostly Strike" },
+            consumedBy       = { "Sinister Strike", "Backstab", "Hemorrhage", "Ambush", "Riposte", "Ghostly Strike", "Mutilate" },
             talent           = "Remorseless Attacks",
             talentIDs        = { 14144, 14148 },
             predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
             predictDuration  = 20,
         },
-        {
-            buffName         = "Cutthroat",       -- your next Ambush doesn't need Stealth
-            alertTexturePath = IMG .. "CrimsonClaws.tga",
-            alertStyle       = "RIGHT",
-            consumedBy       = { "Ambush" },
-        },
+        -- (Cutthroat was removed from Forever at launch)
     },
 }
 
@@ -1382,7 +1378,7 @@ local function SetLive(proc, source, info)
     if info and info.exp then
         a.expiration, a.duration = info.exp, info.dur
     end
-    if next(a.sources) == nil then a.expiration, a.duration = nil, nil end
+    if next(a.sources) == nil then a.expiration, a.duration, a.goneAt = nil, nil, GetTime() end
     Remind.UpdateLive(a, source)
 end
 
@@ -2196,13 +2192,21 @@ end
 local function ConsumeBuffProcs(castName)
     local now = GetTime()
     local pending = false
+    -- `keptDuring`: this cast doesn't spend the proc while the other one is up
+    -- (or went just now: it can be spent a moment before the cast event)
+    local function Kept(proc)
+        local other = castName and proc.keptDuring and proc.keptDuring[castName]
+        local o = other and alerts[other]
+        return o and (next(o.sources) ~= nil or (o.goneAt and now - o.goneAt < 0.5)) or false
+    end
     for _, proc in ipairs(buffProcs) do
         local a = alerts[proc.key]
         local by = proc.consumedBy
         if a and a.sources.aura and by
             and (castName == nil or castName ~= proc.buffName)
             and (now - (a.liveSince or 0)) > 0.25
-            and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName])) then
+            and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName]))
+            and not Kept(proc) then
             a.pendingConsume = (a.pendingConsume or 0) + 1
             pending = true
         end
@@ -2212,7 +2216,8 @@ local function ConsumeBuffProcs(castName)
         if c and c.charges and c.charges > 1 and by and not a.sources.aura
             and (castName == nil or castName ~= proc.buffName)
             and (now - (a.liveSince or 0)) > 0.25
-            and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName])) then
+            and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName]))
+            and not Kept(proc) then
             c.charges = c.charges - 1
         end
     end
@@ -4424,7 +4429,15 @@ end
 
 -- Turns a proc on or off. Spells listed from the Cooldown Manager start off,
 -- so for them "on" is what gets saved; for everything else, "off" is.
+-- Turning one on also gives it the next place at the top of the list
+-- (`order`), under the procs ticked before it.
 local function SetProcEnabled(proc, v)
+    if v and not IsProcEnabled(proc) then
+        local last = 0
+        for _, p in ipairs(classProcs) do last = math.max(last, PS(p.key).order or 0) end
+        PSW(proc.key).order = last + 1
+        if listPage then listPage.resort = true end
+    end
     if proc.defaultOff then
         if v then PSW(proc.key).enabled = true else PSW(proc.key).enabled = nil end
     else
@@ -4451,7 +4464,9 @@ local function ProcKindText(proc)
     return t
 end
 
--- One line about what a proc does, for its card in the list
+-- One line about what a proc's alert does, for its card in the list. It
+-- reads the same wherever the proc comes from (built in, the Cooldown
+-- Manager, the game's proc glow, added by you): the list is one list.
 local function ShortKind(proc)
     if Remind.Is(proc) then return "Reminder when it's missing" end
     if proc.isAction then
@@ -4459,10 +4474,8 @@ local function ShortKind(proc)
         if proc.custom or proc.cdm then return "Lights up when available" end
         return "Reaction ability"
     end
-    if proc.auto then return "Detected from the game's proc glow" end
-    if proc.custom then return "Your own buff" end
-    if proc.cdm then return "Buff from the Cooldown Manager" end
-    return proc.minStacks and ("Buff proc, at " .. proc.minStacks .. " stacks") or "Buff proc"
+    if proc.minStacks then return "Lights up at " .. proc.minStacks .. " stacks" end
+    return "Lights up while you have the buff"
 end
 
 local function SoundOptions(withDefault)
@@ -4659,6 +4672,9 @@ local function CreateListRow(parent)
             end
             ReevaluateAll()
             row:Dim(v)
+            -- a ticked proc moves up under the others; an unticked one stays
+            -- put until the next tick
+            if v and RefreshOptions then RefreshOptions() end
         end)
     row.icon = row:CreateTexture(nil, "ARTWORK")
     row.chevron = FS(row, "GameFontDisable", ">")
@@ -4722,15 +4738,11 @@ local function BindListRow(row, proc)
         row.icon:SetTexCoord(0.2, 0.8, 0.2, 0.8)
     end
     row:Dim(IsProcEnabled(proc))
-    local tag = ""
-    if proc.cdm then
-        tag = proc.isAction and (proc.cdOnly and "cooldown" or "ready") or "buff"
-    elseif proc.auto then
-        tag = "auto"
-    elseif proc.custom then
-        tag = "custom"
+    local tag = "buff"
+    if Remind.Is(proc) then
+        tag = "missing"
     elseif proc.isAction then
-        tag = "react"
+        tag = proc.cdOnly and "cooldown" or ((proc.custom or proc.cdm) and "ready" or "react")
     end
     row.tag:SetText(tag)
     row.check:Refresh()
@@ -4774,30 +4786,41 @@ local function RebuildProcList()
 
     local className = UnitClass("player") or playerClass or ""
     Header(string.upper(className) .. " PROCS")
-    local anyAuto, listed, own = false, {}, 0
-    for _, proc in ipairs(classProcs) do
-        if proc.auto then
-            anyAuto = true
-        elseif proc.cdm then
-            listed[#listed + 1] = proc
-        else
-            Row(proc)
-            own = own + 1
+    -- One list: built in, from the Cooldown Manager, auto-detected and your
+    -- own alike. Ticked procs on top in the order they were ticked, then the
+    -- rest by name. The order holds while you work: unticking leaves a proc
+    -- where it is until something else is ticked (or the next /reload).
+    local order = listPage.order
+    local resort = not order or listPage.resort
+    if not resort then                                     -- a proc added or removed since?
+        local present, n = {}, 0
+        for _, proc in ipairs(classProcs) do present[proc] = true end
+        for _, proc in ipairs(order) do
+            if not present[proc] then resort = true break end
+            n = n + 1
         end
+        resort = resort or n ~= #classProcs
     end
-    if own == 0 then Header("None built in. Auto-detect will add them.") end
-    if anyAuto then
-        Header("AUTO-DETECTED")
-        for _, proc in ipairs(classProcs) do
-            if proc.auto then Row(proc) end
-        end
+    if resort then
+        local index = {}
+        order = {}
+        for i, proc in ipairs(classProcs) do index[proc], order[i] = i, proc end
+        table.sort(order, function(a, b)
+            local onA, onB = IsProcEnabled(a), IsProcEnabled(b)
+            if onA ~= onB then return onA end
+            if onA then
+                local oa, ob = PS(a.key).order or 0, PS(b.key).order or 0
+                if oa ~= ob then return oa < ob end
+            else
+                local na, nb = a.buffName:lower(), b.buffName:lower()
+                if na ~= nb then return na < nb end
+            end
+            return index[a] < index[b]
+        end)
+        listPage.order, listPage.resort = order, nil
     end
-    -- every other spell in Blizzard's Cooldown Manager, off until ticked
-    if #listed > 0 then
-        table.sort(listed, function(a, b) return a.buffName < b.buffName end)
-        Header("FROM BLIZZARD'S COOLDOWN MANAGER (tick to turn on)")
-        for _, proc in ipairs(listed) do Row(proc) end
-    end
+    for _, proc in ipairs(order) do Row(proc) end
+    if #order == 0 then Header("None yet. Auto-detect will add them.") end
     Header("Click a proc to customise it.")
 
     -- Add your own proc
