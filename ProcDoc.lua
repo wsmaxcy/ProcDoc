@@ -37,7 +37,9 @@ local DEFAULTS = {
     autoDetect          = true,
     hideBlizzardOverlay = false,
     cdmAuto             = true,    -- set Blizzard's Cooldown Manager up for ProcDoc (on, procs tracked, rows not Hidden)
-    cdmHideBuffs        = true,    -- keep its Tracked Buffs icons invisible (ProcDoc still reads them)
+    cdmHideBuffs        = false,   -- keep its icons invisible (ProcDoc still reads them); the player's choice
+    centerX             = 0,       -- moves every alert's centre point (multi-monitor setups)
+    centerY             = 0,
     menuSide            = "LEFT",
     menuScale           = 1.0,
     minimapHide         = false,
@@ -72,6 +74,10 @@ local function ProcDoc_LoadGlobalsFromDB()
     local gv = ProcDocDB.globalVars
     if gv.maxSize and not gv.maxScale then gv.maxScale = gv.maxSize end
     gv.maxSize, gv.soundVolume, gv.alphaStep = nil, nil, nil
+    -- 4.13: ProcDoc stopped hiding the Cooldown Manager on its own (it hid the
+    -- player's own cooldowns too, and other addons' skins of it); hiding it is
+    -- now something the player switches on
+    if not gv.cdmShownByDefault then gv.cdmHideBuffs, gv.cdmShownByDefault = false, true end
     for k, v in pairs(DEFAULTS) do
         if gv[k] == nil then gv[k] = v end
     end
@@ -347,6 +353,7 @@ local PROC_DATA = {
         },
         {
             buffName         = "Decimation",      -- empowers Soul Fire
+            altIDs           = { 440873 },
             alertTexturePath = IMG .. "DemonFireArc.tga",
             alertStyle       = "TOP",
             consumedBy       = { "Soul Fire" },
@@ -365,6 +372,7 @@ local PROC_DATA = {
         {
             buffName         = "Missile Barrage", -- instant Arcane Missiles
             spellIDs         = { 400588 },
+            altIDs           = { 400589 },
             alertTexturePath = IMG .. "PinkRuneArc.tga",
             alertStyle       = "SIDES",
             consumedBy       = { "Arcane Missiles" },
@@ -415,6 +423,7 @@ local PROC_DATA = {
         },
         {
             buffName         = "Eclipse",         -- Wrath speeds up your next Starfires
+            altIDs           = { 408250, 408255 },
             alertTexturePath = IMG .. "StarfallCrescent.tga",
             alertStyle       = "LEFT",
             charges          = 4,
@@ -440,6 +449,7 @@ local PROC_DATA = {
         },
         {
             buffName         = "Maelstrom Weapon", -- stacks toward a faster, cheaper Lightning Bolt
+            altIDs           = { 408505 },
             alertTexturePath = IMG .. "LightningWings.tga",  -- (stack count unknown)
             -- the art builds with the stacks: lightning stage 1-4, then the wings at 5
             stackImages      = { IMG .. "LightningStage1.tga", IMG .. "LightningStage2.tga", IMG .. "LightningStage3.tga",
@@ -459,6 +469,7 @@ local PROC_DATA = {
         },
         {
             buffName         = "Rapid Killing",   -- next Shot after a kill hits harder
+            altIDs           = { 415407, 415817 },
             alertTexturePath = IMG .. "ArrowVolleyArc.tga",
             alertStyle       = "TOP",
             consumedBy       = { "Aimed Shot", "Arcane Shot", "Multi-Shot", "Concussive Shot",
@@ -509,6 +520,17 @@ local PROC_DATA = {
     },
 }
 
+-- The spells named in `consumedBy`, by ID, so a cast matches in every client
+-- language (the cast event gives the game's own name for the spell).
+local CONSUMER_IDS = {
+    ["Shadow Bolt"] = 686, ["Soul Fire"] = 6353, ["Arcane Missiles"] = 5143, ["Fire Blast"] = 2136,
+    ["Starfire"] = 2912, ["Wrath"] = 5176, ["Lightning Bolt"] = 403, ["Aimed Shot"] = 19434,
+    ["Arcane Shot"] = 3044, ["Multi-Shot"] = 2643, ["Concussive Shot"] = 5116, ["Scatter Shot"] = 19503,
+    ["Tranquilizing Shot"] = 19801, ["Holy Nova"] = 15237, ["Holy Light"] = 635, ["Sinister Strike"] = 1752,
+    ["Backstab"] = 53, ["Hemorrhage"] = 16511, ["Ambush"] = 8676, ["Riposte"] = 14251,
+    ["Ghostly Strike"] = 14278, ["Mutilate"] = 1329,
+}
+
 local ACTION_PROCS = {
     ["ROGUE"] = {
         {
@@ -527,7 +549,7 @@ local ACTION_PROCS = {
             spellName        = "Overpower",
             spellID          = 7384,
             reactOn          = { target = { DODGE = true } },
-            anyStance        = true,              -- alert on the dodge in Berserker/Defensive Stance too
+            stanceSwap       = true,              -- can also alert in Berserker/Defensive Stance (the player's choice)
             cooldown         = 5,
             alertTexturePath = IMG .. "GlowingEyes.tga",
             alertStyle       = "TOP",
@@ -754,8 +776,18 @@ end
 
 -- Whether an alert should be up: normally while any source says the proc is
 -- on; for a reminder, while nothing says the buff is there
+-- In combat? Kept from the combat events (InCombatLockdown isn't true yet
+-- while PLAYER_REGEN_DISABLED runs)
+function Remind.InCombat()
+    if Remind.inCombat == nil then
+        Remind.inCombat = Clean(SafeCall(UnitAffectingCombat, "player")) == true
+    end
+    return Remind.inCombat
+end
+
 function Remind.WantLive(a)
     if not IsProcEnabled(a.proc) then return false end
+    if PS(a.proc.key).combatOnly and not Remind.InCombat() then return false end   -- "Only in combat"
     local any = next(a.sources) ~= nil
     if not Remind.Is(a.proc) then return any end
     return (not any) and Remind.ConditionOK()
@@ -979,6 +1011,45 @@ function Pips.Draw(pf, filled, slots, r, g, b, sinceGain, alpha)
         d:Show()
     end
     for k = slots + 1, #pf.dots do pf.dots[k]:Hide() end
+    for _, bar in ipairs(pf.bars or {}) do bar:Hide() end
+end
+
+-- Dots for a stack count Forever hides in combat (the Cooldown Manager's,
+-- see CDM.Stacks): ProcDoc can't read it, but a bar may be handed it. Each
+-- dot is a bar spanning one stack (k-1 to k), so the game fills the dots up
+-- to the real count. No pop for the newest dot (nothing says which it is).
+-- If this client refuses, the hidden count is left alone from then on.
+function Pips.DrawSecret(pf, hidden, slots, r, g, b, alpha)
+    local size = pf.size or 11
+    local gap = size * 0.35
+    local total = slots * size + (slots - 1) * gap
+    pf:SetSize(math.max(total, 16), size + 6)
+    pf.bars = pf.bars or {}
+    for k = 1, slots do
+        local bar = pf.bars[k]
+        if not bar then
+            bar = CreateFrame("StatusBar", nil, pf)
+            bar:SetStatusBarTexture(Pips.TEX)
+            bar.bg = bar:CreateTexture(nil, "BACKGROUND")
+            bar.bg:SetAllPoints()
+            bar.bg:SetTexture(Pips.TEX)
+            pf.bars[k] = bar
+        end
+        bar:ClearAllPoints()
+        bar:SetPoint("CENTER", pf, "CENTER", -total / 2 + size / 2 + (k - 1) * (size + gap), 0)
+        bar:SetSize(size, size)
+        bar:SetMinMaxValues(k - 1, k)
+        bar:SetStatusBarColor(r, g, b, alpha)
+        bar.bg:SetVertexColor(0.5, 0.5, 0.55, 0.35 * alpha)
+        if not pcall(bar.SetValue, bar, hidden) then
+            Pips.noHidden = true
+            return false
+        end
+        bar:Show()
+    end
+    for k = slots + 1, #pf.bars do pf.bars[k]:Hide() end
+    for _, d in ipairs(pf.dots) do d:Hide() end
+    return true
 end
 
 local LayoutAlert -- forward
@@ -1015,10 +1086,10 @@ local function PieceDragUpdate(self)
     if a.numPieces < 2 then return end
     local other = a.pieces[3 - self.index]
     local cx, cy = self:GetCenter()
-    local ux, uy = UIParent:GetCenter()
+    local ux, uy = ProcDoc:GetCenter()
     if not cx or not ux or not other then return end
     other:ClearAllPoints()
-    other:SetPoint("CENTER", UIParent, "CENTER", -(cx - ux), cy - uy)
+    other:SetPoint("CENTER", ProcDoc, "CENTER", -(cx - ux), cy - uy)
 end
 
 local function OnPieceDragStop(p)
@@ -1026,7 +1097,7 @@ local function OnPieceDragStop(p)
     p:SetScript("OnUpdate", nil)
     local a = p.alert
     local cx, cy = p:GetCenter()
-    local ux, uy = UIParent:GetCenter()
+    local ux, uy = ProcDoc:GetCenter()
     if not cx or not ux then return end
     local x, y = cx - ux, cy - uy
     if p.index == 2 then x = -x end
@@ -1226,7 +1297,7 @@ LayoutAlert = function(a)
         local px = (i == 2) and -x or x
         local rot, flip, dw, dh = PieceOrientation(region, px, y, w, h, s)
         p:ClearAllPoints()
-        p:SetPoint("CENTER", UIParent, "CENTER", px, y)
+        p:SetPoint("CENTER", ProcDoc, "CENTER", px, y)
         p.baseW, p.baseH = dw * pixelScale, dh * pixelScale
         p:SetSize(p.baseW, p.baseH)
         p.tex:SetTexture(img)
@@ -1366,6 +1437,14 @@ function Remind.UpdateLive(a, why)
         Trace("%s %s (via %s%s)", live and "SHOW" or "HIDE", a.proc.key, why,
             Remind.Is(a.proc) and ", reminder" or "")
         RefreshAlert(a)
+    end
+end
+
+-- Combat started or ended: "Only in combat" alerts show or hide (popping in
+-- with their sound like any proc)
+function Remind.CombatChanged()
+    for _, a in pairs(alerts) do
+        if PS(a.proc.key).combatOnly then Remind.UpdateLive(a, "combat") end
     end
 end
 
@@ -1528,7 +1607,7 @@ local function OnUpdateHandler(self, elapsed)
             a.lastAlpha, a.lastSize = alpha * popAlpha, pulse * pop
 
             -- Stacks: live count from the buff, or a counting sample in previews
-            local stacks, slots
+            local stacks, slots, hidden
             local count, countSrc = Pips.Count(a)
             if Pips.Enabled(a.proc) then
                 if a.live then
@@ -1536,6 +1615,13 @@ local function OnUpdateHandler(self, elapsed)
                     if stacks then
                         slots = s.maxStacks or a.proc.dotSlots or
                             math.max(stacks, (countSrc.slots or 0), a.proc.maxSeen or 0)
+                    else
+                        -- in combat the count may only be there hidden (CDM.Stacks)
+                        local cdm = a.sources.cdm
+                        local m = s.maxStacks or a.proc.dotSlots or a.proc.maxSeen or 0
+                        if cdm and issecret(cdm.secret) and m >= 2 and not Pips.noHidden then
+                            hidden, slots = cdm.secret, m
+                        end
                     end
                 elseif a.test or unlockMode then
                     local m = s.maxStacks or a.proc.dotSlots or a.proc.maxSeen or 0
@@ -1554,7 +1640,8 @@ local function OnUpdateHandler(self, elapsed)
             -- such a set share one size, so only the texture changes.
             local stackImgs = a.proc.stackImages
             if stackImgs and not s.image then
-                local n = stacks or (a.live and countSrc and count) or nil
+                -- (in combat, when the real count is hidden, ProcDoc's own count)
+                local n = stacks or (a.live and count) or nil
                 local want = n and stackImgs[math.max(1, math.min(#stackImgs, n))] or a.baseImage
                 if want and want ~= a.curImage then
                     for i = 1, a.numPieces do
@@ -1585,6 +1672,9 @@ local function OnUpdateHandler(self, elapsed)
                 if stacks and slots and not away and not (i == 2 and s.pipOneSide) then
                     Pips.Draw(p.pipFrame, stacks, math.max(slots, stacks), pr, pg, pb,
                         now - (a.stackGainAt or 0), s.alpha or 1)
+                    p.pipFrame:Show()
+                elseif issecret(hidden) and not away and not (i == 2 and s.pipOneSide)
+                    and Pips.DrawSecret(p.pipFrame, hidden, slots, pr, pg, pb, s.alpha or 1) then
                     p.pipFrame:Show()
                 else
                     p.pipFrame:Hide()
@@ -1621,7 +1711,14 @@ end
 ProcDoc:SetScript("OnUpdate", OnUpdateHandler)
 ProcDoc:SetWidth(1)
 ProcDoc:SetHeight(1)
-ProcDoc:SetPoint("CENTER", UIParent, "CENTER")
+-- The centre every alert is placed around (and pairs mirror around): the
+-- screen centre, moved by Settings > Alerts > Centre point for setups that
+-- shift it (a game spread over several monitors)
+function ProcDoc:ApplyCenter()
+    self:ClearAllPoints()
+    self:SetPoint("CENTER", UIParent, "CENTER", G.centerX or 0, G.centerY or 0)
+end
+ProcDoc:ApplyCenter()
 
 -- 6) Merge buff & action proc definitions for the player's class
 --    Also restores procs auto-detected in earlier sessions and the player's
@@ -1648,16 +1745,29 @@ local function RegisterProc(proc, isAction)
         proc.maxSeen = seen and seen[proc.key] or proc.maxSeen
         for id in pairs(proc.learnedIDs or {}) do
             if not buffBySpellID[id] then buffBySpellID[id] = proc end
+            local n = not proc.auto and GetSpellNameCompat(id)
+            if n and not buffByName[n] then buffByName[n] = proc end   -- (its name in this language)
+        end
+        for _, id in ipairs(proc.altIDs or {}) do
+            if not buffBySpellID[id] then buffBySpellID[id] = proc end
         end
         if type(proc.consumedBy) == "table" then
             proc.consumeSet = {}
-            for _, n in ipairs(proc.consumedBy) do proc.consumeSet[n] = true end
+            for _, n in ipairs(proc.consumedBy) do
+                proc.consumeSet[n] = true
+                local id = CONSUMER_IDS[n]
+                local loc = id and GetSpellNameCompat(id)
+                if loc then proc.consumeSet[loc] = true end
+            end
         end
         for _, id in ipairs(proc.spellIDs or {}) do
             buffBySpellID[id] = proc
             if not proc.auto then
                 local n = GetSpellNameCompat(id)
-                if n then buffByName[n] = proc end
+                if n then
+                    buffByName[n] = proc
+                    proc.localBuffName = proc.localBuffName or n
+                end
             end
         end
     end
@@ -1990,7 +2100,7 @@ local function CheckHiddenProc(proc, now)
     end
     if not aura and C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName then
         -- only a hit is trusted here: a nil could just mean "hidden"
-        local ok, a = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", proc.buffName, "HELPFUL")
+        local ok, a = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", proc.localBuffName or proc.buffName, "HELPFUL")
         if ok and not issecret(a) and type(a) == "table" then aura = a end
     end
     local alert = alerts[proc.key]
@@ -2202,22 +2312,21 @@ local function ConsumeBuffProcs(castName)
     for _, proc in ipairs(buffProcs) do
         local a = alerts[proc.key]
         local by = proc.consumedBy
-        if a and a.sources.aura and by
+        local spends = a and by
             and (castName == nil or castName ~= proc.buffName)
             and (now - (a.liveSince or 0)) > 0.25
             and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName]))
-            and not Kept(proc) then
+            and not Kept(proc)
+        -- (a Cooldown Manager update right after this is a charge used, not a refresh)
+        if spends then proc.spentAt = now end
+        if spends and a.sources.aura then
             a.pendingConsume = (a.pendingConsume or 0) + 1
             pending = true
         end
         -- seen only through the Cooldown Manager: count charges down for the
         -- display (the icon itself says when it's gone)
         local c = a and a.sources.cdm
-        if c and c.charges and c.charges > 1 and by and not a.sources.aura
-            and (castName == nil or castName ~= proc.buffName)
-            and (now - (a.liveSince or 0)) > 0.25
-            and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName]))
-            and not Kept(proc) then
+        if spends and c and c.charges and c.charges > 1 and not a.sources.aura then
             c.charges = c.charges - 1
         end
     end
@@ -2259,6 +2368,11 @@ function Predict.HasTalent(proc)
         end
     end
     if answer == nil and proc.talent and GetNumTalentTabs and GetNumTalents and GetTalentInfo then
+        local names = { [proc.talent] = true }                  -- (and in the player's language)
+        for _, id in ipairs(proc.talentIDs or {}) do
+            local n = GetSpellNameCompat(id)
+            if n then names[n] = true end
+        end
         local okT, tabs = pcall(GetNumTalentTabs)
         tabs = okT and Readable(tabs) and tonumber(tabs) or 0
         for t = 1, tabs do
@@ -2266,7 +2380,7 @@ function Predict.HasTalent(proc)
             n = okN and Readable(n) and tonumber(n) or 0
             for i = 1, n do
                 local ok, name, _, _, _, rank = pcall(GetTalentInfo, t, i)
-                if ok and Readable(name) and name == proc.talent then
+                if ok and Readable(name) and names[name] then
                     answer = Readable(rank) and type(rank) == "number" and rank > 0
                     break
                 end
@@ -2536,10 +2650,12 @@ local function IsActionProcReady(proc)
         usable, how = true, how .. ", short of power"
     end
     if glowActive[name] then usable, how = true, "glow" end
-    -- `anyStance` (Overpower): the ability only works in one stance, so in any
-    -- other the game says "not usable" even right after the dodge. The dodge
-    -- window still counts (switch stance and use it), so alert on it anyway.
-    if usable == false and proc.anyStance and (st.reactUntil or 0) > now
+    -- `stanceSwap` (Overpower): the ability only works in one stance, so in any
+    -- other the game says "not usable" even right after the dodge. A player
+    -- who ticks "Also in other stances" gets the dodge window there too (switch
+    -- stance and use it). It's a guess: the game only says the target dodged,
+    -- not whose attack, so off by default, where "usable" is exact.
+    if usable == false and proc.stanceSwap and PS(proc.key).anyStance and (st.reactUntil or 0) > now
         and (now - (st.lastCast or -1000)) >= (proc.cooldown or 0) then
         usable, how = true, how .. ", dodge window (any stance)"
     end
@@ -2787,8 +2903,11 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
         if Readable(arg1) and Readable(arg2) then
             local flag = Readable(arg3) and arg3 or nil
             local now = GetTime()
+            -- your target's dodge only counts against an enemy (a party member
+            -- you target dodging something isn't an Overpower)
+            local enemy = arg1 ~= "target" or Clean(SafeCall(UnitCanAttack, "player", "target")) == true
             for _, proc in ipairs(actionProcs) do
-                local on = proc.reactOn and proc.reactOn[arg1]
+                local on = enemy and proc.reactOn and proc.reactOn[arg1]
                 if on and (on[arg2] or (flag and on[flag])) then
                     local st = actionState[proc.key] or {}
                     actionState[proc.key] = st
@@ -2805,12 +2924,16 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
         Predict.ResetTalents()
     elseif event == "PLAYER_REGEN_DISABLED" then
         Trace("entered combat")
+        Remind.inCombat = true
+        Remind.CombatChanged()                 -- "Only in combat" alerts can show now
         CheckAllActionProcs()
     elseif event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
         RefreshAllAlerts()     -- real-pixel sizing depends on both
     elseif event == "PLAYER_REGEN_ENABLED" then
         -- Aura data unlocks after combat: resync everything
         Trace("left combat")
+        Remind.inCombat = false
+        Remind.CombatChanged()
         CheckProcs()
         CheckAllActionProcs()
     else
@@ -2864,10 +2987,60 @@ function CDM.Items()
     for _, name in ipairs(CDM.VIEWERS) do
         local viewer = _G[name]
         if type(viewer) == "table" and type(viewer.GetChildren) == "function" then
-            for _, f in ipairs({ viewer:GetChildren() }) do out[#out + 1] = f end
+            for _, f in ipairs({ viewer:GetChildren() }) do
+                out[#out + 1] = f
+                if not CDM.hooked[f] then CDM.HookItem(f) end
+            end
         end
     end
     return out
+end
+
+-- The game tells each icon when its buff changes: refreshed (a re-proc, which
+-- the icon's "active" alone doesn't show), or more or fewer stacks. A hook
+-- after Blizzard's own handler hears it too (hooksecurefunc leaves the
+-- Cooldown Manager untouched); while buffs are hidden it's the only word of a
+-- refresh. Errors stay in ProcDoc (the game's loop over its icons goes on).
+CDM.hooked = setmetatable({}, { __mode = "k" })
+
+function CDM.HookItem(f)
+    CDM.hooked[f] = true
+    if type(f.OnUnitAuraUpdatedEvent) == "function" and hooksecurefunc then
+        hooksecurefunc(f, "OnUnitAuraUpdatedEvent", function(self)
+            if initialized and auraLocked then pcall(CDM.Updated, self) end
+        end)
+    end
+end
+
+-- An icon's buff changed while buffs are hidden: start the countdown over
+-- (unless one of the proc's spenders was just cast: then a charge was used,
+-- not a refresh) and take the stack count, read or hidden. When the count is
+-- hidden, ProcDoc keeps its own (`charges`) for the per-stack art: a charge
+-- proc is full again on a refresh, a stacking one gains a stack.
+function CDM.Updated(f)
+    local proc = CDM.ProcFor(CDM.CooldownID(f), f)
+    local info = proc and CDM.live[proc.key]
+    if not info then return end
+    local now = GetTime()
+    local spent = now - (proc.spentAt or -10) < 0.5
+    local n, _, hidden = CDM.Stacks(f)
+    -- (a hidden value is only ever stored and handed on: testing it errors)
+    local isHidden = n == nil and issecret(hidden)
+    info.stacks, info.secret = n, nil
+    if isHidden then info.secret = hidden end
+    if not spent then
+        local dur = proc.lastDuration or info.dur
+        info.exp, info.dur = now + dur, dur
+        if n == nil and proc.charges then
+            info.charges = proc.chargesSeen or proc.charges
+        elseif n == nil and (proc.dotSlots or proc.stackImages) then
+            info.charges = math.min((info.charges or 1) + 1, proc.dotSlots or #proc.stackImages)
+        end
+    end
+    if n and n > (proc.maxSeen or 0) then proc.maxSeen = n end
+    Trace("%s %s in the Cooldown Manager (stacks %s)", proc.key, spent and "used a charge" or "refreshed",
+        n and tostring(n) or (isHidden and "hidden" or "?"))
+    SetLive(proc, "cdm", info)
 end
 
 function CDM.CooldownID(f)
@@ -2945,9 +3118,20 @@ function CDM.Active(f)
     return nil, "unknown"
 end
 
--- The icon's stack count, when this client lets an addon read it (field or
--- count text; a blank count on an active icon means 1)
+-- The icon's stack count, when this client lets an addon read it (its aura,
+-- a field or the count text; a blank count on an active icon means 1). In
+-- combat Forever hides it: then the third value is the hidden count itself,
+-- which ProcDoc can't read but can hand to a bar to show (Pips.DrawSecret).
 function CDM.Stacks(f)
+    local ad = f.auraDataCached                   -- the aura the icon shows (Blizzard_CooldownViewer)
+    if type(ad) == "table" then
+        local v = ad.applications
+        if issecret(v) then return nil, "auraDataCached (hidden in combat)", v end
+        if type(v) == "number" then
+            if v > 0 then return v, "auraDataCached" end
+            return nil, "auraDataCached (doesn't stack)"
+        end
+    end
     for _, k in ipairs({ "applications", "auraApplications", "stacks" }) do
         local v = Clean(f[k])
         if type(v) == "number" then return v, k end
@@ -3144,19 +3328,19 @@ function CDM.Poll()
         return
     end
     CDM.wasLocked = true
-    local want, how, gone, stacks = {}, {}, {}, {}
+    local want, how, gone, stacks, hiddenStacks = {}, {}, {}, {}, {}
     for _, f in ipairs(CDM.Items()) do
         local proc = CDM.ProcFor(CDM.CooldownID(f), f)
         if proc and IsProcEnabled(proc) then
             local active, why = CDM.Active(f)
             if active then
                 want[proc.key], how[proc.key] = proc, why
-                local n, from = CDM.Stacks(f)
-                if n then stacks[proc.key] = n end
+                local n, from, hidden = CDM.Stacks(f)
+                if n then stacks[proc.key] = n elseif issecret(hidden) then hiddenStacks[proc.key] = hidden end
                 if not CDM.stackHow[proc.key] then
                     CDM.stackHow[proc.key] = true
                     Trace("%s stack count from the Cooldown Manager: %s", proc.key,
-                        n and (n .. " via " .. from) or "not readable")
+                        n and (n .. " via " .. from) or (from or "not readable"))
                 end
             elseif active == false and CDM.SURE[why] then
                 gone[proc.key] = gone[proc.key] or { proc = proc, why = why }
@@ -3167,14 +3351,21 @@ function CDM.Poll()
         local info = CDM.live[key]
         if not info then
             local dur = proc.lastDuration or proc.predictDuration or 10
-            -- full charges when it appears (as many as it has had for this player)
-            info = { exp = now + dur, dur = dur, charges = proc.chargesSeen or proc.charges }
+            -- already up before the buffs were hidden: its real time left
+            local a = alerts[key]
+            local aura = a and a.sources.aura
+            local exp = (aura and aura.exp and aura.exp > now) and aura.exp or (now + dur)
+            -- full charges when it appears (as many as it has had for this player);
+            -- a stacking proc starts at one (or what the buff check last saw)
+            local charges = proc.chargesSeen or proc.charges
+            if not charges and (proc.dotSlots or proc.stackImages) then charges = (aura and aura.stacks) or 1 end
+            info = { exp = exp, dur = dur, charges = charges }
             CDM.live[key] = info
-            info.stacks = stacks[key]
+            info.stacks, info.secret = stacks[key], hiddenStacks[key]
             SetLive(proc, "cdm", info)
             Trace("%s is up in the Cooldown Manager (%s)", key, how[key])
-        elseif stacks[key] then
-            info.stacks = stacks[key]                                       -- (the alert reads this table)
+        else
+            info.stacks, info.secret = stacks[key], hiddenStacks[key]       -- (the alert reads this table)
         end
         if info.stacks and info.stacks > (proc.maxSeen or 0) then proc.maxSeen = info.stacks end
     end
@@ -3655,6 +3846,22 @@ function CDM.Report()
             end
         end
     end
+    -- buff procs the Cooldown Manager doesn't offer at all: Forever hides buffs
+    -- from addons mid-fight, so ProcDoc only sees these out of combat
+    local offered, answered = CDM.Offered()
+    if answered then
+        local listed, missing = {}, {}
+        for _, p in ipairs(offered) do listed[p.key] = true end
+        for _, p in ipairs(buffProcs) do
+            if IsProcEnabled(p) and not p.cdm and not listed[p.key] then missing[#missing + 1] = p.buffName end
+        end
+        if #missing > 0 then
+            Print("Not in the Cooldown Manager's buff lists (ProcDoc only sees them out of combat): "
+                .. table.concat(missing, ", "))
+        else
+            Print("Every buff proc you have on is in the Cooldown Manager's buff lists.")
+        end
+    end
 end
 
 do
@@ -3860,20 +4067,19 @@ local function SetUnlocked(on)
         lock:SetText("Lock")
         lock:SetScript("OnClick", function() SetUnlocked(false) end)
 
-        -- Faint crosshair through the screen centre to line alerts up
+        -- Faint crosshair through the alerts' centre point to line them up
+        -- (it follows Settings > Alerts > Centre point; the screen clips it)
         centerGuide = CreateFrame("Frame", nil, UIParent)
         centerGuide:SetAllPoints(UIParent)
         centerGuide:SetFrameStrata("LOW")
         local v = centerGuide:CreateTexture(nil, "ARTWORK")
         v:SetColorTexture(1, 1, 1, 0.18)
-        v:SetWidth(1)
-        v:SetPoint("TOP")
-        v:SetPoint("BOTTOM")
+        v:SetSize(1, 6000)
+        v:SetPoint("CENTER", ProcDoc, "CENTER")
         local h = centerGuide:CreateTexture(nil, "ARTWORK")
         h:SetColorTexture(1, 1, 1, 0.18)
-        h:SetHeight(1)
-        h:SetPoint("LEFT")
-        h:SetPoint("RIGHT")
+        h:SetSize(10000, 1)
+        h:SetPoint("CENTER", ProcDoc, "CENTER")
     end
     if unlockBar then
         unlockBar:SetShown(unlockMode)
@@ -5194,6 +5400,31 @@ function ProcUI.Alert(page, st, child)
     rest:SetSize(CHILD_W, 10)
     local rs = Stack({ child = rest, SetContentHeight = function() end }, procWidgets)
     rs.y = -4
+    rs:Add(CreateCheck(rest, "Only in combat",
+        function() return pageProc and PS(pageProc.key).combatOnly end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).combatOnly = v or nil
+            ReevaluateAll()
+        end, "Shows this alert only while you're in combat. Handy for a reminder you can't act on out of combat, like a missing Battle Shout."), 16, nil, 10)
+    -- (Overpower) also in the other stances, on your target's dodge; BindProcPage
+    -- shows it only where it applies and moves the rest up otherwise
+    page.stanceY = rs.y
+    page.stanceCheck = rs:Add(CreateCheck(rest, "Also in other stances",
+        function() return pageProc and PS(pageProc.key).anyStance end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).anyStance = v or nil
+            ReevaluateAll()
+        end, "Also lights up in your other stances when your target dodges, so you can switch to Battle Stance and use it. The game doesn't say whose attack was dodged, so in a group it can also light up for someone else's."), 16, nil, 10)
+
+    -- the rest of the page sits under whichever switches are shown
+    local tail = CreateFrame("Frame", nil, rest)
+    tail:SetSize(CHILD_W, 10)
+    rs = Stack({ child = tail, SetContentHeight = function() end }, procWidgets)
+    rs.y = -4
+    page.rest = rest
+    rest = tail                                -- (what follows is built into the tail)
     rs:Add(CreateHeader(rest, "Sound", COL), 18)
     local soundDD = rs:Add(CreateDropdown(rest, COL - 30, function() return SoundOptions(true) end,
         function() return pageProc and PS(pageProc.key).sound or "default" end,
@@ -5228,7 +5459,7 @@ function ProcUI.Alert(page, st, child)
     end)
     page.removeButton:SetPoint("LEFT", resetProc, "RIGHT", 6, 0)
     AttachTooltip(page.removeButton, "Remove from list", "For procs you added or that were auto-detected.")
-    page.rest, page.restHeight = rest, -rs.y
+    page.tail, page.tailHeight = tail, -rs.y
 end
 
 -- Look: image, size, opacity, mirror and rotation
@@ -5478,10 +5709,15 @@ local function BindProcPage(changed)
     page.durationSlider:SetShown(timed)
     page.cooldownNote:SetShown(isAction and not timed)
     local alert = book.pages.Alert
+    local stance = p.stanceSwap and true or false             -- "Also in other stances" (Overpower)
+    page.stanceCheck:SetShown(stance)
+    local ty = page.stanceY - (stance and 26 or 0)
+    page.tail:ClearAllPoints()
+    page.tail:SetPoint("TOPLEFT", page.rest, "TOPLEFT", 0, ty)
     local y = page.slotY - (timed and 44 or (isAction and 34 or 0))
     page.rest:ClearAllPoints()
     page.rest:SetPoint("TOPLEFT", alert.child, "TOPLEFT", 0, y)
-    alert:SetContentHeight(-y + page.restHeight + 12)
+    alert:SetContentHeight(-y - ty + page.tailHeight + 12)
     page.removeButton:SetShown((p.custom or p.auto) and true or false)
     book.tabs.Stacks:SetShown(not isAction)                    -- stack dots are for buffs
     book:Layout()
@@ -5554,6 +5790,11 @@ local function BuildGeneralPage(parent)
         SetUnlocked(not unlockMode)
         arrange.text:SetText(unlockMode and "Done arranging" or "Show all to arrange")
     end), 24, nil, 14)
+    local centre = st:Add(Label(child,
+        "Centre point: alerts are placed around it (pairs mirror\nacross it). Move it if your character isn't in the\nmiddle of the screen, e.g. a game over several monitors."), 38, nil, 8)
+    centre:SetJustifyH("LEFT")
+    GSlider("Centre point: left / right", "centerX", -2000, 2000, 5, px, function() ProcDoc:ApplyCenter() end)
+    GSlider("Centre point: up / down", "centerY", -800, 800, 5, px, function() ProcDoc:ApplyCenter() end)
 
     st:Space(8)
     st:Add(CreateHeader(child, "Pulse", COL), 18)
@@ -5656,7 +5897,7 @@ local function BuildGeneralPage(parent)
             G.cdmHideBuffs = v
             if not v then wipe(CDM.Record().keep) end                   -- show every row again
         end,
-        "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts."), 16, nil, 14)
+        "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts. Leave it off if you use the Cooldown Manager yourself, or an addon that restyles it."), 16, nil, 14)
 
     st:Add(CreateHeader(child, "Window & minimap", COL), 18)
     st:Add(CreateCheck(child, "Show minimap button",
@@ -5684,7 +5925,9 @@ local function BuildGeneralPage(parent)
         wipe(ProcDocDB.globalVars)
         ProcDocDB.procSettings[playerClass] = nil
         ProcDoc_LoadGlobalsFromDB()
+        ProcDoc:ApplyCenter()
         ReevaluateAll()
+        RefreshAllAlerts()
         ApplyPanelGeometry()
         for _, w in ipairs(generalWidgets) do w:Refresh() end
         Print("all settings reset to defaults.")
@@ -6355,6 +6598,7 @@ Initialize = function()
     local _, cls = UnitClass("player")
     playerClass = cls
     ComputeAccent()
+    ProcDoc:ApplyCenter()                     -- the saved centre point
     BuildClassProcs()
     MigrateLegacySettings()
     -- Saved images that aren't in img\ any more (renamed or removed) fall back to
