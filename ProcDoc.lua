@@ -358,7 +358,7 @@ local PROC_DATA = {
             alertStyle       = "SIDES",
             consumedBy       = { "Shadow Bolt" },
             talent           = "Nightfall",
-            talentIDs        = { 18094, 18095 }, -- the Cooldown Manager lists the talent
+            talentIDs        = { 18094 },        -- the Cooldown Manager lists the talent
             baseDuration     = 10,
         },
         {
@@ -468,7 +468,7 @@ local PROC_DATA = {
         },
         {
             buffName         = "Flurry",
-            spellIDs         = { 16257, 16277, 16278, 16279, 16280 },
+            spellIDs         = { 16257 },
             cdmIDs           = { 16256 },
             baseDuration     = 15,
             texture          = "Interface\\Icons\\Ability_GhoulFrenzy",
@@ -517,7 +517,7 @@ local PROC_DATA = {
             -- On Forever: a 30% chance after any damaging hit (not every crit), so
             -- there's no trigger to guess it from in combat
             buffName         = "Enrage",
-            spellIDs         = { 12880, 14201, 14202, 14203, 14204 },
+            spellIDs         = { 12880 },
             cdmIDs           = { 12317 },
             baseDuration     = 12,
             texture          = "Interface\\Icons\\Spell_Shadow_UnholyFrenzy",
@@ -551,13 +551,13 @@ local PROC_DATA = {
     ["ROGUE"] = {
         {
             buffName         = "Remorseless",     -- Remorseless Attacks
-            spellIDs         = { 14143, 14149 },
+            spellIDs         = { 14143 },
             texture          = "Interface\\Icons\\Ability_FeignDeath",
             alertTexturePath = IMG .. "SmallRedSlash.tga",
             alertStyle       = "SIDES",
             consumedBy       = { "Sinister Strike", "Backstab", "Hemorrhage", "Ambush", "Riposte", "Ghostly Strike", "Mutilate" },
             talent           = "Remorseless Attacks",
-            talentIDs        = { 14144, 14148 },
+            talentIDs        = { 14144 },
             predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
             predictDuration  = 20,
             baseDuration     = 20,
@@ -574,7 +574,7 @@ local CONSUMER_IDS = {
     ["Arcane Shot"] = 3044, ["Multi-Shot"] = 2643, ["Concussive Shot"] = 5116, ["Scatter Shot"] = 19503,
     ["Tranquilizing Shot"] = 19801, ["Holy Nova"] = 15237, ["Holy Light"] = 635, ["Sinister Strike"] = 1752,
     ["Backstab"] = 53, ["Hemorrhage"] = 16511, ["Ambush"] = 8676, ["Riposte"] = 14251,
-    ["Ghostly Strike"] = 14278, ["Mutilate"] = 1329,
+    ["Ghostly Strike"] = 14278, ["Mutilate"] = 1329, ["Sniper Shot"] = 1310687,
 }
 
 local ACTION_PROCS = {
@@ -1069,46 +1069,8 @@ function Pips.Draw(pf, filled, slots, r, g, b, sinceGain, alpha)
         d:Show()
     end
     for k = slots + 1, #pf.dots do pf.dots[k]:Hide() end
-    for _, bar in ipairs(pf.bars or {}) do bar:Hide() end
 end
 
--- Dots for a stack count Forever hides in combat (the Cooldown Manager's,
--- see CDM.Stacks): ProcDoc can't read it, but a bar may be handed it. Each
--- dot is a bar spanning one stack (k-1 to k), so the game fills the dots up
--- to the real count. No pop for the newest dot (nothing says which it is).
--- If this client refuses, the hidden count is left alone from then on.
-function Pips.DrawSecret(pf, hidden, slots, r, g, b, alpha)
-    local size = pf.size or 11
-    local gap = size * 0.35
-    local total = slots * size + (slots - 1) * gap
-    pf:SetSize(math.max(total, 16), size + 6)
-    pf.bars = pf.bars or {}
-    for k = 1, slots do
-        local bar = pf.bars[k]
-        if not bar then
-            bar = CreateFrame("StatusBar", nil, pf)
-            bar:SetStatusBarTexture(Pips.TEX)
-            bar.bg = bar:CreateTexture(nil, "BACKGROUND")
-            bar.bg:SetAllPoints()
-            bar.bg:SetTexture(Pips.TEX)
-            pf.bars[k] = bar
-        end
-        bar:ClearAllPoints()
-        bar:SetPoint("CENTER", pf, "CENTER", -total / 2 + size / 2 + (k - 1) * (size + gap), 0)
-        bar:SetSize(size, size)
-        bar:SetMinMaxValues(k - 1, k)
-        bar:SetStatusBarColor(r, g, b, alpha)
-        bar.bg:SetVertexColor(0.5, 0.5, 0.55, 0.35 * alpha)
-        if not pcall(bar.SetValue, bar, hidden) then
-            Pips.noHidden = true
-            return false
-        end
-        bar:Show()
-    end
-    for k = slots + 1, #pf.bars do pf.bars[k]:Hide() end
-    for _, d in ipairs(pf.dots) do d:Hide() end
-    return true
-end
 
 local LayoutAlert -- forward
 
@@ -1617,6 +1579,7 @@ local function OnUpdateHandler(self, elapsed)
             local remaining
             if a.live and a.expiration then
                 remaining = a.expiration - now
+                if remaining < -0.5 then remaining = nil end   -- (re-procced mid-fight: time unknown)
             elseif a.test then
                 local d = a.testDuration or 10
                 remaining = d - ((now - (a.testStart or now)) % d)
@@ -1665,7 +1628,7 @@ local function OnUpdateHandler(self, elapsed)
             a.lastAlpha, a.lastSize = alpha * popAlpha, pulse * pop
 
             -- Stacks: live count from the buff, or a counting sample in previews
-            local stacks, slots, hidden
+            local stacks, slots
             local count, countSrc = Pips.Count(a)
             if Pips.Enabled(a.proc) then
                 if a.live then
@@ -1674,14 +1637,11 @@ local function OnUpdateHandler(self, elapsed)
                         slots = s.maxStacks or a.proc.dotSlots or
                             math.max(stacks, (countSrc.slots or 0), a.proc.maxSeen or 0)
                     else
-                        -- in combat the count may only be there hidden (CDM.Stacks)
+                        -- in combat the game hides the count: ProcDoc's own
+                        -- count of a charge proc's charges (ConsumeBuffProcs)
                         local cdm = a.sources.cdm
                         local m = s.maxStacks or a.proc.dotSlots or a.proc.maxSeen or 0
-                        if cdm and issecret(cdm.secret) and m >= 2 and not Pips.noHidden then
-                            hidden, slots = cdm.secret, m
-                        elseif cdm and cdm.charges and m >= 2 then
-                            -- hidden altogether: ProcDoc's own count from the
-                            -- icon's updates and your casts (CDM.Updated)
+                        if cdm and cdm.charges and a.proc.charges and m >= 2 then
                             stacks, slots = cdm.charges, m
                         end
                     end
@@ -1734,9 +1694,6 @@ local function OnUpdateHandler(self, elapsed)
                 if stacks and slots and not away and not (i == 2 and s.pipOneSide) then
                     Pips.Draw(p.pipFrame, stacks, math.max(slots, stacks), pr, pg, pb,
                         now - (a.stackGainAt or 0), s.alpha or 1)
-                    p.pipFrame:Show()
-                elseif issecret(hidden) and not away and not (i == 2 and s.pipOneSide)
-                    and Pips.DrawSecret(p.pipFrame, hidden, slots, pr, pg, pb, s.alpha or 1) then
                     p.pipFrame:Show()
                 else
                     p.pipFrame:Hide()
@@ -2383,8 +2340,6 @@ local function ConsumeBuffProcs(castName)
             and (now - (a.liveSince or 0)) > 0.25
             and (by == "ANY" or (castName and proc.consumeSet and proc.consumeSet[castName]))
             and not Kept(proc)
-        -- (a Cooldown Manager update right after this is a charge used, not a refresh)
-        if spends then proc.spentAt = now end
         if spends and a.sources.aura then
             a.pendingConsume = (a.pendingConsume or 0) + 1
             pending = true
@@ -3053,62 +3008,17 @@ function CDM.Items()
     for _, name in ipairs(CDM.VIEWERS) do
         local viewer = _G[name]
         if type(viewer) == "table" and type(viewer.GetChildren) == "function" then
-            for _, f in ipairs({ viewer:GetChildren() }) do
-                out[#out + 1] = f
-                if not CDM.hooked[f] then pcall(CDM.HookItem, f) end
-            end
+            for _, f in ipairs({ viewer:GetChildren() }) do out[#out + 1] = f end
         end
     end
     return out
 end
 
--- The game tells each icon when its buff changes: refreshed (a re-proc, which
--- the icon's "active" alone doesn't show), or more or fewer stacks. A hook
--- after Blizzard's own handler hears it too (hooksecurefunc leaves the
--- Cooldown Manager untouched); while buffs are hidden it's the only word of a
--- refresh. Errors stay in ProcDoc (the game's loop over its icons goes on).
-CDM.hooked = setmetatable({}, { __mode = "k" })
-
-function CDM.HookItem(f)
-    CDM.hooked[f] = true
-    if type(f.OnUnitAuraUpdatedEvent) == "function" and hooksecurefunc then
-        hooksecurefunc(f, "OnUnitAuraUpdatedEvent", function(self)
-            if initialized and auraLocked then pcall(CDM.Updated, self) end
-        end)
-    end
-end
-
--- An icon's buff changed while buffs are hidden: start the countdown over
--- (unless one of the proc's spenders was just cast: then a charge was used,
--- not a refresh) and take the stack count, read or hidden. When the count is
--- hidden, ProcDoc keeps its own (`charges`) for the per-stack art: a charge
--- proc is full again on a refresh, a stacking one gains a stack.
-function CDM.Updated(f)
-    local proc = CDM.ProcFor(CDM.CooldownID(f), f)
-    local info = proc and CDM.live[proc.key]
-    if not info then return end
-    local now = GetTime()
-    local spent = now - (proc.spentAt or -10) < 0.5
-    local n, _, hidden = CDM.Stacks(f)
-    -- (a hidden value is only ever stored and handed on: testing it errors)
-    local isHidden = n == nil and issecret(hidden)
-    info.stacks, info.secret = n, nil
-    if isHidden then info.secret = hidden end
-    if not spent then
-        local dur = proc.lastDuration or info.dur
-        if dur then info.exp, info.dur = now + dur, dur end
-        if n == nil and proc.charges then
-            info.charges = proc.chargesSeen or proc.charges
-        elseif n == nil and (proc.dotSlots or proc.stackImages) then
-            info.charges = math.min((info.charges or 1) + 1, proc.dotSlots or #proc.stackImages)
-        end
-    end
-    if n and n > (proc.maxSeen or 0) then proc.maxSeen = n end
-    Trace("%s %s in the Cooldown Manager (stacks %s)", proc.key, spent and "used a charge" or "refreshed",
-        n and tostring(n) or (isHidden and "hidden" or "?"))
-    SetLive(proc, "cdm", info)
-end
-
+-- ProcDoc only ever reads the Cooldown Manager's icons: no hooks on them and
+-- nothing taken from the auras behind them. Its own code works with values
+-- Forever keeps from addons in combat (aura instance numbers, in tables only
+-- untouched Blizzard code may use); 4.13 hooked the icons' update calls and
+-- read their auras, and in-combat procs stopped showing.
 function CDM.CooldownID(f)
     local id = Clean(f.cooldownID)
     if id == nil and type(f.GetCooldownID) == "function" then id = Clean(SafeCall(f.GetCooldownID, f)) end
@@ -3187,23 +3097,10 @@ function CDM.Active(f)
     return nil, "unknown"
 end
 
--- The icon's stack count, when this client lets an addon read it (its aura,
--- a field or the count text; a blank count on an active icon means 1). In
--- combat Forever hides it: then the third value is the hidden count itself,
--- which ProcDoc can't read but can hand to a bar to show (Pips.DrawSecret).
+-- The icon's stack count, when this client lets an addon read it (a field or
+-- the count text; a blank count on an active icon means 1). In combat Forever
+-- hides it: then ProcDoc counts charges itself (ConsumeBuffProcs).
 function CDM.Stacks(f)
-    local ad = f.auraDataCached                   -- the aura the icon shows (Blizzard_CooldownViewer)
-    -- In combat Forever can hide the whole aura, not just its numbers: then
-    -- there's nothing to read in it (looking inside errors)
-    if issecret(ad) then return nil, "auraDataCached (hidden in combat)" end
-    if type(ad) == "table" then
-        local v = ad.applications
-        if issecret(v) then return nil, "auraDataCached (hidden in combat)", v end
-        if type(v) == "number" then
-            if v > 0 then return v, "auraDataCached" end
-            return nil, "auraDataCached (doesn't stack)"
-        end
-    end
     for _, k in ipairs({ "applications", "auraApplications", "stacks" }) do
         local v = Clean(f[k])
         if type(v) == "number" then return v, k end
@@ -3378,11 +3275,18 @@ function CDM.WatchActions()
     end
 end
 
+-- Buffs hidden right now: the buff scan says so, or you're in combat (Forever
+-- always hides them then; the scan alone could miss it)
+function CDM.Hidden()
+    return auraLocked or Remind.InCombat()
+end
+
 function CDM.Poll()
     local now = GetTime()
     CDM.ApplyHide()
-    if G.trace and auraLocked then CDM.WatchActions() end
-    if not auraLocked then
+    local hidden = CDM.Hidden()
+    if G.trace and hidden then CDM.WatchActions() end
+    if not hidden then
         if CDM.wasLocked then
             -- buffs readable again: say whether the icons were right, then let the scan rule
             for key in pairs(CDM.live) do
@@ -3400,15 +3304,15 @@ function CDM.Poll()
         return
     end
     CDM.wasLocked = true
-    local want, how, gone, stacks, hiddenStacks = {}, {}, {}, {}, {}
+    local want, how, gone, stacks = {}, {}, {}, {}
     local function Read(f)
         local proc = CDM.ProcFor(CDM.CooldownID(f), f)
         if proc and IsProcEnabled(proc) then
             local active, why = CDM.Active(f)
             if active then
                 want[proc.key], how[proc.key] = proc, why
-                local n, from, hidden = CDM.Stacks(f)
-                if n then stacks[proc.key] = n elseif issecret(hidden) then hiddenStacks[proc.key] = hidden end
+                local n, from = CDM.Stacks(f)
+                if n then stacks[proc.key] = n end
                 if not CDM.stackHow[proc.key] then
                     CDM.stackHow[proc.key] = true
                     Trace("%s stack count from the Cooldown Manager: %s", proc.key,
@@ -3441,17 +3345,14 @@ function CDM.Poll()
             local a = alerts[key]
             local aura = a and a.sources.aura
             local exp = (aura and aura.exp and aura.exp > now) and aura.exp or (dur and now + dur)
-            -- full charges when it appears (as many as it has had for this player);
-            -- a stacking proc starts at one (or what the buff check last saw)
-            local charges = proc.chargesSeen or proc.charges
-            if not charges and (proc.dotSlots or proc.stackImages) then charges = (aura and aura.stacks) or 1 end
-            info = { exp = exp, dur = dur, charges = charges }
+            -- full charges when it appears (as many as it has had for this player)
+            info = { exp = exp, dur = dur, charges = proc.chargesSeen or proc.charges }
             CDM.live[key] = info
-            info.stacks, info.secret = stacks[key], hiddenStacks[key]
+            info.stacks = stacks[key]
             SetLive(proc, "cdm", info)
             Trace("%s is up in the Cooldown Manager (%s)", key, how[key])
-        else
-            info.stacks, info.secret = stacks[key], hiddenStacks[key]       -- (the alert reads this table)
+        elseif stacks[key] then
+            info.stacks = stacks[key]                                       -- (the alert reads this table)
         end
         if info.stacks and info.stacks > (proc.maxSeen or 0) then proc.maxSeen = info.stacks end
     end
@@ -3986,7 +3887,7 @@ function Signal.Read(proc, sig)
     if type(cost) ~= "number" or type(ct) ~= "number" then return nil end
     local b = Signal.base[id] or {}
     Signal.base[id] = b
-    if not auraLocked then
+    if not CDM.Hidden() then
         -- buffs readable: the stacks are known, so the spell's own cost is too
         local a = alerts[proc.key]
         local aura = a and a.sources.aura
@@ -4015,7 +3916,7 @@ function Signal.Poll()
         if sig and IsProcEnabled(proc) then
             local ok, n = pcall(Signal.Read, proc, sig)
             local info = Signal.live[proc.key]
-            if not auraLocked then
+            if not CDM.Hidden() then
                 if info then                                          -- the buff check rules again
                     Signal.live[proc.key] = nil
                     SetLive(proc, "signal", nil)
@@ -4041,6 +3942,89 @@ function Signal.Poll()
             end
         end
     end
+end
+
+-- /procdoc check: is everything ProcDoc relies on right in this game?
+--  1) every spell number it uses, for every class (the game has every class's
+--     spells, so any character can check them all): each must exist, and in
+--     an English client carry the name ProcDoc expects
+--  2) this character: Blizzard's Cooldown Manager on, ProcDoc setting it up,
+--     its buff rows not Hidden, and how each of your procs is seen in combat
+function CDM.Check()
+    local english = ((GetLocale and Clean(SafeCall(GetLocale))) or "enUS"):sub(1, 2) == "en"
+    local checked, counted, problems = 0, {}, {}
+    local function Check(id, want, what)
+        if not counted[id] then counted[id], checked = true, checked + 1 end
+        local name = GetSpellNameCompat(id)
+        if not name then
+            problems[#problems + 1] = string.format("%s: spell %d isn't in this game", what, id)
+        elseif want and english and name ~= want then
+            problems[#problems + 1] = string.format("%s: spell %d is \"%s\", not \"%s\"", what, id, name, want)
+        end
+    end
+    local function Class(cls) return cls:sub(1, 1) .. cls:sub(2):lower() end
+    for cls, list in pairs(PROC_DATA) do
+        for _, p in ipairs(list) do
+            local what = Class(cls) .. " " .. p.buffName
+            for _, id in ipairs(p.spellIDs or {}) do Check(id, p.buffName, what) end
+            for _, id in ipairs(p.cdmIDs or {}) do Check(id, nil, what .. " (its Cooldown Manager entry)") end
+            for _, id in ipairs(p.talentIDs or {}) do Check(id, p.talent, what .. " (its talent)") end
+            if p.castSignal then Check(p.castSignal.spell, nil, what .. " (the spell it's read from)") end
+        end
+    end
+    for cls, list in pairs(ACTION_PROCS) do
+        for _, p in ipairs(list) do Check(p.spellID, p.spellName, Class(cls) .. " " .. p.buffName) end
+    end
+    for name, id in pairs(CONSUMER_IDS) do Check(id, name, "spender " .. name) end
+    if #problems == 0 then
+        Print(string.format("check: all %d spell numbers ProcDoc uses (every class) are in this game%s.",
+            checked, english and ", with the names it expects" or ""))
+    else
+        Print(string.format("check: |cffff5555%d problem(s)|r in %d spell numbers:", #problems, checked))
+        for _, line in ipairs(problems) do DEFAULT_CHAT_FRAME:AddMessage("  " .. line) end
+    end
+
+    -- this character
+    local on = CDM.Enabled()
+    Print("Blizzard's Cooldown Manager: " .. ((on == true and "on") or
+        (on == false and "|cffff5555off|r (type |cff00ffff/procdoc cdm on|r)") or "can't tell")
+        .. ", Set it up for me: " .. (G.cdmAuto and "on" or "|cffff5555off|r (Settings > Setup)"))
+    for _, row in ipairs(CDM.HiddenRows()) do
+        DEFAULT_CHAT_FRAME:AddMessage("  |cffff5555" .. (CDM.BUFF_ROWS[row] or row) .. " is set to Hidden in Edit Mode|r: "
+            .. (G.cdmAuto and "ProcDoc fixes it at your next /reload" or "set its Visibility to Always"))
+    end
+    local watched, offered = {}, {}
+    for _, f in ipairs(CDM.Items()) do
+        local p = CDM.ProcFor(CDM.CooldownID(f), f)
+        if p then watched[p.key] = true end
+    end
+    for _, w in ipairs(CDM.Wanted()) do offered[w.proc.key] = true end
+    local bad = 0
+    Print("your procs in combat:")
+    for _, proc in ipairs(classProcs) do
+        if IsProcEnabled(proc) then
+            local how
+            if proc.isAction then
+                how = (proc.custom or proc.cdm) and "from its cooldown (your own ability)"
+                    or "lights up when the game says you can use it"
+            elseif watched[proc.key] then
+                how = "seen (its Cooldown Manager icon)"
+            elseif proc.castSignal then
+                how = "seen (read from " .. (GetSpellNameCompat(proc.castSignal.spell) or "its spell") .. ")"
+            elseif offered[proc.key] then
+                how = "|cffffd100in the Cooldown Manager's list, not tracked yet|r: "
+                    .. (G.cdmAuto and "ProcDoc adds it at your next /reload" or "put it in Tracked Buffs")
+                bad = bad + 1
+            elseif proc.predictOn then
+                how = "lit by your killing blow (the Cooldown Manager doesn't list it)"
+            else
+                how = "|cffff5555only out of combat|r (the Cooldown Manager doesn't list it)"
+                bad = bad + 1
+            end
+            DEFAULT_CHAT_FRAME:AddMessage("  " .. proc.buffName .. ": " .. how)
+        end
+    end
+    if bad == 0 and #problems == 0 and on ~= false then Print("everything checks out.") end
 end
 
 do
@@ -6684,6 +6668,8 @@ SlashCmdList["PROCDOC"] = function(msg)
         PrintBuffs()
     elseif cmd == "cdm" then
         if (msg or ""):lower():match("^%s*%S+%s+on%s*$") then CDM.TurnOn() else CDM.Report() end
+    elseif cmd == "check" then
+        CDM.Check()
     elseif cmd == "stacktest" then
         local want = (msg or ""):lower():match("^%s*%S+%s+(.-)%s*$")
         local pick
@@ -6743,7 +6729,7 @@ SlashCmdList["PROCDOC"] = function(msg)
         SetMinimapButtonShown(G.minimapHide)
         Print("minimap button " .. (G.minimapHide and "hidden." or "shown."))
     elseif cmd == "help" then
-        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [on], trace, debug")
+        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [on], check, trace, debug")
     else
         ToggleOptions()
     end
