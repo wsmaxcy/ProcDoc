@@ -83,7 +83,7 @@ A slim panel docked near the side of the screen, so your alerts stay visible whi
 - **Procs tab**: every proc for your class in one list. Tick one to turn it on; click it (the arrow at the end of each card) to open its page. At the bottom, **Add a proc** tracks any buff by name, spell ID, or from your current buffs.
 - **Each proc's page**: a header that stays put while you scroll, with **< All procs**, **<** / **>** to step through the list, the alert's image (click it to change it), what the alert does, **Enabled** and **Preview**. Under it, five tabs:
   - **Alert**: **Alert me when** the buff shows up, or it's missing (a reminder). For spells you cast (your own procs and the Cooldown Manager's), also while it's on cooldown (counting down until it's back) or while it's available, and **Show for** how long an available ability stays up (or until you use it). **Only in combat** keeps an alert for fights (a missing Battle Shout, say). Overpower also has **Also in other stances**. Then its **Sound** (or the default), **Reset to default**, and **Remove from list** for your own and auto-detected procs.
-  - **Look**: **Change image...** (any of the 76 images in `img\`, the spell icon, Blizzard's art, or your own file; hover one to try it on the alert), size (1.00x = the image's real pixel size, whatever your resolution; alerts start at 0.85x), opacity, **Mirror image** and **Rotation**. *Auto* rotation turns the art to face outward (where the alert sits decides which way); you can also pick 0 / 90 / 180 / 270 degrees.
+  - **Look**: **Change image...** (any of the 99 images in `img\`, the spell icon, Blizzard's art, or your own file; hover one to try it on the alert), size (1.00x = the image's real pixel size, whatever your resolution; alerts start at 0.85x), opacity, **Mirror image** and **Rotation**. *Auto* rotation turns the art to face outward (where the alert sits decides which way); you can also pick 0 / 90 / 180 / 270 degrees.
   - **Place**: **Snap to** Top, Bottom, Left, Right or Sides (a mirrored left + right pair), then drag to fine-tune. Also **Both sides**, Show all to arrange and Reset position.
   - **Timer**: show the countdown or not, text size, color, on one side only (for pairs), and Reset countdown.
   - **Stacks** (buffs only): a row of dots shows how many stacks you have. Filled dots are stacks you have and dim ones are the rest; the newest dot pops when you gain a stack. Choose **Show the alert at** N stacks, the **Number of dots** (auto uses the most stacks seen), the dot color, and dots on one side only. Drag the dots on screen to move them, or Shift + wheel over them to resize. **Test stacks** plays a pretend stacking buff through the alert so you can check it all without a real one.
@@ -115,7 +115,7 @@ Original images made for ProcDoc in the same glowing style, ready in the image p
 | Frost Shards | side | Mage (frost) |
 | Arcane Runes | top | Mage (arcane) |
 | Fel Flame | side | Warlock |
-| Demon Fire Arc | top | Warlock (Decimation, Soul Fire) |
+| Demon Fire Arc | top | Warlock (Soul Fire) |
 | Shadow Wisps | side | Warlock, shadow Priest, Rogue |
 | Crimson Claws | side | Hunter, feral Druid |
 | Venom Drip | side | Rogue (poisons), Hunter |
@@ -123,10 +123,27 @@ Original images made for ProcDoc in the same glowing style, ready in the image p
 | Storm Vortex Arc | top | Shaman |
 | Starfall Crescent | side | Druid (Eclipse) |
 | Divine Rays | top | Paladin, Priest (great for custom procs) |
-| Holy Flame Arc | top | Priest (Searing Light) |
+| Holy Flame Arc | top | Priest (Holy Purpose) |
 | Radiant Feathers | top | Paladin (Infusion of Light) |
 | Arrow Volley Arc | top | Hunter (Rapid Killing) |
 | Ember Crown | top | Warrior |
+
+Also in the picker, in the style of the game's own proc art:
+
+| Image | Shape | Used for / good for |
+| --- | --- | --- |
+| Arcane Seal Stage 1, 2, 3 | side | Mage (arcane): a violet arcane crescent with one to three rune seals |
+| Elemental Arc | side | Clearcasting for Shamans (Elemental Focus): fire, earth, lightning and frost |
+| Void Crescent | side | Warlock, shadow Priest |
+| Demon Ember Band | top | Decimation |
+| Blue Lightning Streak | side | Flurry for Shamans |
+| Arrow Stage 1, 2, 3 | side | Quick Shots (stage 3); one to three golden arrows |
+| Shadow Nova | top | shadow Priest, Warlock |
+| Green Fel Band, Fel Crescent, Fel Flame Streaks, Fel Storm Arc | top, side, side, top | Warlock |
+| Tidal Arc | top | Shaman (water) |
+| Blazing Storm Arc | top | Warrior, Hunter, fire |
+| Silver Wisp Arc, Golden Lightning Streak | side | Rogue, Warrior |
+| Violet Swirls, Jade Mist, Jade Swirl Crescent, Golden Bubble Stream | side | your own procs |
 
 ### Using your own images
 
@@ -143,18 +160,18 @@ ProcDoc only alerts on **reaction** procs, meaning something just happened that 
 | Warlock | Shadow Trance (Nightfall), Decimation |
 | Mage | Clearcasting, Missile Barrage (Arcane Missiles keeps your Clearcasting while it's up), Fingers of Frost (left side at 1 stack, both sides at 2), Heating Up (with stack dots), Wake of Fire (lights up on your killing blow) |
 | Druid | Clearcasting, Nature's Grace, Eclipse (with charge dots) |
-| Shaman | Clearcasting (Elemental Focus), Flurry, Maelstrom Weapon (the lightning builds with your stacks: stage 1 to 4, then wings at 5) |
+| Shaman | Clearcasting (Elemental Focus), Flurry, Maelstrom Weapon (the lightning builds with your stacks: stage 1 to 4, then wings at 5; read in combat from Lightning Bolt's mana cost) |
 | Hunter | Quick Shots (Deadly Aspects), Rapid Killing, Counterattack, Mongoose Bite (10 sec window, for Expose Prey) |
 | Warrior | Enrage, Overpower (in Battle Stance; tick **Also in other stances** for the others), Revenge |
 | Rogue | Remorseless Attacks (spent by Mutilate too), Riposte |
-| Priest | Searing Light (free Holy Nova) |
+| Priest | Holy Purpose (from Searing Light: a free Holy Nova) |
 | Paladin | Infusion of Light (faster Holy Light) |
 
 Anything Forever adds is caught by **auto-detect** if the game shows its own proc glow for it. Anything else can be added with **Add a proc**.
 
-**About combat:** Forever hides your buffs from addons while you're in combat. ProcDoc still catches the procs it can see coming: **Remorseless Attacks** lights up on your killing blow (an enemy dying at the same moment the buff lands on you, so a party member's kill doesn't set it off) and **Wake of Fire** the same way, and the reaction abilities when you dodge, parry or block. Other buff procs that start mid-fight appear as soon as combat ends, and any proc that was already up before the fight stays up until it's used or runs out.
+**About combat:** Forever hides your buffs from addons while you're in combat, so ProcDoc reads them another way. Every built-in buff proc except two is in Blizzard's Cooldown Manager, and ProcDoc follows its icons mid-fight (matched by spell number from Forever's own game data, so it works in any client language). **Maelstrom Weapon** isn't in the Cooldown Manager: each stack takes 20% off Lightning Bolt's mana cost, which the game does show in combat, so ProcDoc reads the stacks from there. **Wake of Fire** and **Remorseless Attacks** also light up on your killing blow (an enemy dying at the same moment the buff lands on you, so a party member's kill doesn't set it off). The reaction abilities light up when the game says they're usable. Countdowns use each buff's real length from the game data (or what ProcDoc last saw).
 
-**For the most accurate alerts, ProcDoc uses Blizzard's Cooldown Manager.** It can see your buffs in combat, so ProcDoc follows it: any proc in its **Tracked Buffs** or **Tracked Bars** (Shadow Trance, Clearcasting, Remorseless, Fingers of Frost and more) lights up and clears mid-fight exactly. ProcDoc sets it up for you: it switches it on (once per character), adds your procs to Tracked Buffs if Blizzard left them out, and makes sure those rows aren't set to **Hidden** in Edit Mode (a hidden row stops watching your buffs). A row that was set to Hidden stays out of sight (ProcDoc keeps it invisible instead). Mid-fight, ProcDoc also hears from each icon when its buff is refreshed (the countdown starts over on a re-proc) or its stacks change; Forever hides the stack count from addons in combat, but ProcDoc can still hand it to its stack dots, so they show the real count. The setup is saved when you log out or `/reload`, so on a new character, procs light up mid-fight from your first `/reload` on. ProcDoc leaves the Cooldown Manager on screen; if you'd rather not see it, tick **Hide its icons** (leave it off if you use the Cooldown Manager yourself or an addon that restyles it). Both are switches in `/procdoc` > Settings > Setup (**Set it up for me** and **Hide its icons**). `/procdoc cdm` shows what it's tracking, and which of your procs the Cooldown Manager doesn't offer at all (those ProcDoc can only see out of combat).
+**For the most accurate alerts, ProcDoc uses Blizzard's Cooldown Manager.** It can see your buffs in combat, so ProcDoc follows it: any proc in its **Tracked Buffs** or **Tracked Bars** (Shadow Trance, Clearcasting, Remorseless, Fingers of Frost and more) lights up and clears mid-fight exactly. ProcDoc sets it up for you: it switches it on (once per character), adds your procs to Tracked Buffs if Blizzard left them out, and makes sure those rows aren't set to **Hidden** in Edit Mode (a hidden row stops watching your buffs). A row that was set to Hidden stays out of sight (ProcDoc keeps it invisible instead). Mid-fight, ProcDoc also hears from each icon when its buff is refreshed (the countdown starts over on a re-proc) or its stacks change. Forever hides a buff's time and stack count from addons in combat, so the countdown uses the buff's full length as ProcDoc last saw it out of combat (remembered between sessions; a buff it has never seen out of combat shows without a countdown until then), and the stack dots count from the icon's updates and your casts. The setup is saved when you log out or `/reload`, so on a new character, procs light up mid-fight from your first `/reload` on. ProcDoc leaves the Cooldown Manager on screen; if you'd rather not see it, tick **Hide its icons** (leave it off if you use the Cooldown Manager yourself or an addon that restyles it). Both are switches in `/procdoc` > Settings > Setup (**Set it up for me** and **Hide its icons**). `/procdoc cdm` shows what it's tracking, and which of your procs the Cooldown Manager doesn't offer at all (those ProcDoc can only see out of combat).
 
 When the Cooldown Manager is watching a proc, that's all ProcDoc goes by in combat; its other tricks (like spotting Remorseless from your killing blow) are only a backup for procs it can't see. Reaction abilities like Overpower and Riposte use the game's own "usable" state, the same thing that lights up their Cooldown Manager icon.
 

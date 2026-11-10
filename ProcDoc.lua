@@ -62,6 +62,7 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.custom              = ProcDocDB.custom or {}                -- [class][procKey] = { name, spellID }
     ProcDocDB.learned             = ProcDocDB.learned or {}               -- [class][procKey] = { [spellID] = true }
     ProcDocDB.stackMax            = ProcDocDB.stackMax or {}              -- [class][procKey] = highest stacks seen
+    ProcDocDB.durations           = ProcDocDB.durations or {}             -- [class][procKey] = the buff's full duration, last seen
     ProcDocDB.seen                = ProcDocDB.seen or {}                  -- [class][procKey] = true once the buff was read
     ProcDocDB.cdmTips             = ProcDocDB.cdmTips or {}               -- [class][procKey] = true once the Cooldown Manager tip was shown
     ProcDocDB.cdmOffTold          = ProcDocDB.cdmOffTold or {}            -- ["Name-Realm"] = true once told the Cooldown Manager is off
@@ -335,6 +336,14 @@ end
 -- has the talent (`talent` name / `talentIDs`), and the first readable scan
 -- after combat confirms or clears them.
 --
+-- Numbers come from Forever's own game data (build 1.60.1.70862): `spellIDs`
+-- are the buff itself; `cdmIDs` are the spell the Cooldown Manager lists for
+-- it (often the talent, e.g. Arcane Concentration for Clearcasting), so its
+-- icon is matched in every client language; `baseDuration` is the buff's
+-- length, for the countdown while the game hides it (until ProcDoc has seen
+-- it for itself). A proc the Cooldown Manager doesn't offer can be read from
+-- the spell it changes (`castSignal`, see Signal in section 9).
+--
 -- These are the talent/ability reaction procs built into ProcDoc for WoW
 -- Forever. Anything else Forever flags with a proc glow is caught at
 -- runtime by "Auto-detect" (Blizzard's proc overlay events), and players can
@@ -345,16 +354,19 @@ local PROC_DATA = {
             buffName         = "Shadow Trance",   -- Nightfall
             spellIDs         = { 17941 },
             texture          = "Interface\\Icons\\Spell_Shadow_Twilight",
-            alertTexturePath = IMG .. "FelOoze.tga",
+            alertTexturePath = IMG .. "ShadowStar.tga",
             alertStyle       = "SIDES",
             consumedBy       = { "Shadow Bolt" },
             talent           = "Nightfall",
-            talentIDs        = { 18094, 18095 }, -- the Cooldown Manager may list the talent
+            talentIDs        = { 18094, 18095 }, -- the Cooldown Manager lists the talent
+            baseDuration     = 10,
         },
         {
             buffName         = "Decimation",      -- empowers Soul Fire
-            altIDs           = { 440873 },
-            alertTexturePath = IMG .. "DemonFireArc.tga",
+            spellIDs         = { 440873 },
+            cdmIDs           = { 440870 },
+            baseDuration     = 10,
+            alertTexturePath = IMG .. "DemonEmberBand.tga",
             alertStyle       = "TOP",
             consumedBy       = { "Soul Fire" },
         },
@@ -363,6 +375,8 @@ local PROC_DATA = {
         {
             buffName         = "Clearcasting",    -- Arcane Concentration
             spellIDs         = { 12536 },
+            cdmIDs           = { 11213 },
+            baseDuration     = 15,
             texture          = "Interface\\Icons\\Spell_Shadow_ManaBurn",
             alertTexturePath = IMG .. "WhiteStarburst.tga",
             alertStyle       = "TOP",
@@ -371,15 +385,18 @@ local PROC_DATA = {
         },
         {
             buffName         = "Missile Barrage", -- instant Arcane Missiles
-            spellIDs         = { 400588 },
-            altIDs           = { 400589 },
+            spellIDs         = { 400589 },
+            cdmIDs           = { 400588 },
+            baseDuration     = 15,
             alertTexturePath = IMG .. "PinkRuneArc.tga",
             alertStyle       = "SIDES",
             consumedBy       = { "Arcane Missiles" },
         },
         {
             buffName         = "Fingers of Frost",
-            spellIDs         = { 400669 },
+            spellIDs         = { 400670, 400669 },
+            cdmIDs           = { 400647 },
+            baseDuration     = 15,
             alertTexturePath = IMG .. "FrostShards.tga",
             alertStyle       = "SIDES",
             charges          = 2,
@@ -389,18 +406,19 @@ local PROC_DATA = {
         {
             buffName         = "Heating Up",      -- builds toward Hot Streak
             spellIDs         = { 400625 },
+            cdmIDs           = { 400624 },
+            baseDuration     = 20,
             alertTexturePath = IMG .. "FireBand.tga",
             alertStyle       = "BOTTOM",
             dotSlots         = 3,                -- stack dots underneath
         },
         {
             buffName         = "Wake of Fire",    -- next Fire Blast after a kill crits more
-            spellIDs         = { 11078 },
+            spellIDs         = { 1312934 },      -- (not in the Cooldown Manager: lit by your killing blow)
             alertTexturePath = IMG .. "FireSwoosh.tga",
             alertStyle       = "LEFT",
             consumedBy       = { "Fire Blast" },
             talent           = "Wake of Fire",
-            talentIDs        = { 11078 },
             predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
             predictDuration  = 30,
         },
@@ -409,6 +427,8 @@ local PROC_DATA = {
         {
             buffName         = "Clearcasting",    -- Omen of Clarity
             spellIDs         = { 16870 },
+            cdmIDs           = { 16864 },
+            baseDuration     = 15,
             texture          = "Interface\\Icons\\Spell_Shadow_ManaBurn",
             alertTexturePath = IMG .. "WhiteStarburst.tga",
             alertStyle       = "TOP",
@@ -417,13 +437,17 @@ local PROC_DATA = {
         {
             buffName         = "Nature's Grace",  -- 3 sec of faster casting after a spell crit
             spellIDs         = { 16886 },
+            cdmIDs           = { 16880 },
+            baseDuration     = 3,
             texture          = "Interface\\Icons\\Spell_Nature_NaturesBlessing",
             alertTexturePath = IMG .. "GreenVines.tga",
             alertStyle       = "SIDES",
         },
         {
             buffName         = "Eclipse",         -- Wrath speeds up your next Starfires
-            altIDs           = { 408250, 408255 },
+            spellIDs         = { 408255 },
+            cdmIDs           = { 408248 },
+            baseDuration     = 15,
             alertTexturePath = IMG .. "StarfallCrescent.tga",
             alertStyle       = "LEFT",
             charges          = 4,
@@ -435,21 +459,29 @@ local PROC_DATA = {
         {
             buffName         = "Clearcasting",    -- Elemental Focus
             spellIDs         = { 16246 },
+            cdmIDs           = { 16164 },
+            baseDuration     = 15,
             texture          = "Interface\\Icons\\Spell_Shadow_ManaBurn",
-            alertTexturePath = IMG .. "StormStones.tga",
+            alertTexturePath = IMG .. "ElementalArc.tga",     -- (the four elements)
             alertStyle       = "TOP",
             consumedBy       = "ANY",
         },
         {
             buffName         = "Flurry",
             spellIDs         = { 16257, 16277, 16278, 16279, 16280 },
+            cdmIDs           = { 16256 },
+            baseDuration     = 15,
             texture          = "Interface\\Icons\\Ability_GhoulFrenzy",
-            alertTexturePath = IMG .. "DarkRedStreaks.tga",
+            alertTexturePath = IMG .. "BlueLightningStreak.tga",
             alertStyle       = "SIDES2",
         },
         {
             buffName         = "Maelstrom Weapon", -- stacks toward a faster, cheaper Lightning Bolt
-            altIDs           = { 408505 },
+            spellIDs         = { 408505 },
+            baseDuration     = 30,
+            -- not in the Cooldown Manager: each stack takes 20% off Lightning
+            -- Bolt's mana cost and cast time, which stay readable in combat
+            castSignal       = { spell = 403, perStack = 0.2, maxStacks = 5 },
             alertTexturePath = IMG .. "LightningWings.tga",  -- (stack count unknown)
             -- the art builds with the stacks: lightning stage 1-4, then the wings at 5
             stackImages      = { IMG .. "LightningStage1.tga", IMG .. "LightningStage2.tga", IMG .. "LightningStage3.tga",
@@ -463,13 +495,17 @@ local PROC_DATA = {
         {
             buffName         = "Quick Shots",     -- Deadly Aspects (was Improved Aspect of the Hawk)
             spellIDs         = { 6150 },
+            cdmIDs           = { 19552 },
+            baseDuration     = 12,
             texture          = "Interface\\Icons\\Ability_Warrior_InnerRage",
-            alertTexturePath = IMG .. "GoldenArrows.tga",
+            alertTexturePath = IMG .. "ArrowStage3.tga",
             alertStyle       = "SIDES",
         },
         {
             buffName         = "Rapid Killing",   -- next Shot after a kill hits harder
-            altIDs           = { 415407, 415817 },
+            spellIDs         = { 415407 },
+            cdmIDs           = { 415405 },
+            baseDuration     = 20,
             alertTexturePath = IMG .. "ArrowVolleyArc.tga",
             alertStyle       = "TOP",
             consumedBy       = { "Aimed Shot", "Arcane Shot", "Multi-Shot", "Concussive Shot",
@@ -482,6 +518,8 @@ local PROC_DATA = {
             -- there's no trigger to guess it from in combat
             buffName         = "Enrage",
             spellIDs         = { 12880, 14201, 14202, 14203, 14204 },
+            cdmIDs           = { 12317 },
+            baseDuration     = 12,
             texture          = "Interface\\Icons\\Spell_Shadow_UnholyFrenzy",
             alertTexturePath = IMG .. "BloodOrbs.tga",
             alertStyle       = "SIDES",
@@ -489,7 +527,11 @@ local PROC_DATA = {
     },
     ["PRIEST"] = {
         {
-            buffName         = "Searing Light",   -- your next Holy Nova costs no Mana
+            key              = "Searing Light",   -- (its settings from before kept)
+            buffName         = "Holy Purpose",    -- from Searing Light: your next Holy Nova costs no Mana
+            spellIDs         = { 1284536 },
+            cdmIDs           = { 1284536 },
+            baseDuration     = 10,
             alertTexturePath = IMG .. "HolyFlameArc.tga",
             alertStyle       = "TOP",
             consumedBy       = { "Holy Nova" },
@@ -498,6 +540,9 @@ local PROC_DATA = {
     ["PALADIN"] = {
         {
             buffName         = "Infusion of Light", -- faster next Holy Light
+            spellIDs         = { 437063 },
+            cdmIDs           = { 426065 },
+            baseDuration     = 15,
             alertTexturePath = IMG .. "RadiantFeathers.tga",
             alertStyle       = "TOP",
             consumedBy       = { "Holy Light" },
@@ -515,6 +560,7 @@ local PROC_DATA = {
             talentIDs        = { 14144, 14148 },
             predictOn        = "KILL",           -- your killing blow on a non-trivial enemy
             predictDuration  = 20,
+            baseDuration     = 20,
         },
         -- (Cutthroat was removed from Forever at launch)
     },
@@ -600,26 +646,35 @@ local ACTION_PROC_DEFAULT_DURATIONS = {
 -- image picker. Generated from the folder: keep it in sync with the files
 -- (a listed file that is missing shows blank).
 local IMAGE_LIST = {
-    { "ArcaneRunes", 256, 128 },          { "ArrowVolleyArc", 256, 128 },
-    { "AutumnVines", 128, 256 },          { "BloodOrbs", 128, 256 },
+    { "ArcaneRunes", 256, 128 },          { "ArcaneSealStage1", 128, 256 },
+    { "ArcaneSealStage2", 128, 256 },     { "ArcaneSealStage3", 128, 256 },
+    { "ArrowStage1", 128, 256 },          { "ArrowStage2", 128, 256 },
+    { "ArrowStage3", 128, 256 },          { "ArrowVolleyArc", 256, 128 },
+    { "AutumnVines", 128, 256 },          { "BlazingStormArc", 256, 128 },
+    { "BloodOrbs", 128, 256 },            { "BlueLightningStreak", 128, 256 },
     { "BrightGoldBlade", 128, 256 },      { "CrescentMoon", 128, 128 },
     { "CrescentMoonGlow", 128, 256 },     { "CrimsonClaws", 128, 256 },
     { "CrimsonStreakArc", 64, 128 },      { "DarkRedStreaks", 128, 256 },
-    { "DemonFireArc", 256, 128 },         { "DivineRays", 256, 128 },
+    { "DemonEmberBand", 256, 128 },       { "DemonFireArc", 256, 128 },
+    { "DivineRays", 256, 128 },           { "ElementalArc", 128, 256 },
     { "EmberArc", 128, 256 },             { "EmberCrown", 256, 128 },
-    { "FelFlame", 128, 256 },             { "FelOoze", 128, 256 },
-    { "FireBand", 256, 128 },             { "FireBurst", 256, 128 },
-    { "FireSwoosh", 256, 128 },           { "FlameStreaks", 128, 256 },
-    { "FlamingDagger", 128, 256 },        { "FrostBand", 256, 128 },
-    { "FrostFireArc", 128, 256 },         { "FrostShards", 128, 256 },
-    { "GlowingEyes", 256, 128 },          { "GoldenArrows", 128, 256 },
+    { "FelCrescent", 128, 256 },          { "FelFlame", 128, 256 },
+    { "FelFlameStreaks", 128, 256 },      { "FelOoze", 128, 256 },
+    { "FelStormArc", 256, 128 },          { "FireBand", 256, 128 },
+    { "FireBurst", 256, 128 },            { "FireSwoosh", 256, 128 },
+    { "FlameStreaks", 128, 256 },         { "FlamingDagger", 128, 256 },
+    { "FrostBand", 256, 128 },            { "FrostFireArc", 128, 256 },
+    { "FrostShards", 128, 256 },          { "GlowingEyes", 256, 128 },
+    { "GoldenArrows", 128, 256 },         { "GoldenBubbleStream", 128, 256 },
     { "GoldenCrosshair", 256, 128 },      { "GoldenFlameCrescent", 128, 256 },
-    { "GoldenLightningArc", 128, 256 },   { "GoldenRunes", 256, 128 },
-    { "GoldenShield", 128, 256 },         { "GoldenSunArc", 128, 256 },
-    { "GoldenSword", 128, 256 },          { "GoldenWingedEmblem", 256, 128 },
+    { "GoldenLightningArc", 128, 256 },   { "GoldenLightningStreak", 128, 256 },
+    { "GoldenRunes", 256, 128 },          { "GoldenShield", 128, 256 },
+    { "GoldenSunArc", 128, 256 },         { "GoldenSword", 128, 256 },
+    { "GoldenWingedEmblem", 256, 128 },   { "GreenFelBand", 256, 128 },
     { "GreenGlowArch", 256, 128 },        { "GreenMist", 128, 256 },
     { "GreenVines", 128, 256 },           { "HolyFlameArc", 256, 128 },
     { "IceWallArc", 128, 256 },           { "IcyBlueArc", 128, 256 },
+    { "JadeMist", 128, 256 },             { "JadeSwirlCrescent", 128, 256 },
     { "LightningStage1", 256, 128 },      { "LightningStage2", 256, 128 },
     { "LightningStage3", 256, 128 },      { "LightningStage4", 256, 128 },
     { "LightningWings", 256, 128 },       { "OrangeStreakArc", 128, 256 },
@@ -628,16 +683,19 @@ local IMAGE_LIST = {
     { "PurpleThornBand", 256, 128 },      { "RadiantFeathers", 256, 128 },
     { "RedBoltSlash", 256, 128 },         { "RedFlameCrescent", 128, 256 },
     { "RedShield", 128, 256 },            { "RedSlash", 256, 128 },
-    { "RunePlate", 256, 128 },            { "ShadowStar", 128, 256 },
-    { "ShadowWisps", 128, 256 },          { "SilverEmblem", 128, 128 },
+    { "RunePlate", 256, 128 },            { "ShadowNova", 256, 128 },
+    { "ShadowStar", 128, 256 },           { "ShadowWisps", 128, 256 },
+    { "SilverEmblem", 128, 128 },         { "SilverWispArc", 128, 256 },
     { "SmallRedSlash", 128, 256 },        { "StarfallCrescent", 128, 256 },
     { "StormArc", 256, 128 },             { "StormStones", 256, 128 },
     { "StormVortexArc", 256, 128 },       { "SunOrb", 128, 128 },
-    { "VenomDrip", 128, 256 },            { "WhiteArch", 256, 128 },
-    { "WhiteArcSoft", 128, 256 },         { "WhiteCrescent", 128, 256 },
-    { "WhiteDoubleArch", 256, 128 },      { "WhiteDoubleCrescent", 128, 256 },
-    { "WhiteFlareArc", 128, 256 },        { "WhiteRuneArc", 128, 256 },
-    { "WhiteSparkArc", 128, 256 },        { "WhiteStarburst", 256, 128 },
+    { "TidalArc", 256, 128 },             { "VenomDrip", 128, 256 },
+    { "VioletSwirls", 128, 256 },         { "VoidCrescent", 128, 256 },
+    { "WhiteArch", 256, 128 },            { "WhiteArcSoft", 128, 256 },
+    { "WhiteCrescent", 128, 256 },        { "WhiteDoubleArch", 256, 128 },
+    { "WhiteDoubleCrescent", 128, 256 },  { "WhiteFlareArc", 128, 256 },
+    { "WhiteRuneArc", 128, 256 },         { "WhiteSparkArc", 128, 256 },
+    { "WhiteStarburst", 256, 128 },
 }
 local IMAGE_SIZE = {}
 for _, e in ipairs(IMAGE_LIST) do
@@ -962,7 +1020,7 @@ end
 -- Stacks right now: the buff's own count when readable (or the Cooldown
 -- Manager's), else the charges left by our own counting while buffs are hidden
 function Pips.Count(a)
-    for _, name in ipairs({ "aura", "cdm", "sim" }) do
+    for _, name in ipairs({ "signal", "aura", "cdm", "sim" }) do
         local src = a.sources[name]
         if src and src.stacks then return src.stacks, src end
     end
@@ -1621,6 +1679,10 @@ local function OnUpdateHandler(self, elapsed)
                         local m = s.maxStacks or a.proc.dotSlots or a.proc.maxSeen or 0
                         if cdm and issecret(cdm.secret) and m >= 2 and not Pips.noHidden then
                             hidden, slots = cdm.secret, m
+                        elseif cdm and cdm.charges and m >= 2 then
+                            -- hidden altogether: ProcDoc's own count from the
+                            -- icon's updates and your casts (CDM.Updated)
+                            stacks, slots = cdm.charges, m
                         end
                     end
                 elseif a.test or unlockMode then
@@ -1743,13 +1805,12 @@ local function RegisterProc(proc, isAction)
         proc.learnedIDs = learned and learned[proc.key] or nil
         local seen = ProcDocDB.stackMax and ProcDocDB.stackMax[playerClass]
         proc.maxSeen = seen and seen[proc.key] or proc.maxSeen
+        local durs = ProcDocDB.durations and ProcDocDB.durations[playerClass]
+        proc.lastDuration = proc.lastDuration or (durs and durs[proc.key]) or proc.baseDuration
         for id in pairs(proc.learnedIDs or {}) do
             if not buffBySpellID[id] then buffBySpellID[id] = proc end
             local n = not proc.auto and GetSpellNameCompat(id)
             if n and not buffByName[n] then buffByName[n] = proc end   -- (its name in this language)
-        end
-        for _, id in ipairs(proc.altIDs or {}) do
-            if not buffBySpellID[id] then buffBySpellID[id] = proc end
         end
         if type(proc.consumedBy) == "table" then
             proc.consumeSet = {}
@@ -2021,7 +2082,12 @@ local function MakeAuraInfo(proc, count, duration, expirationTime, instanceID, n
     end
     if Readable(duration) and Readable(expirationTime) and duration > 0 and expirationTime > now then
         info.exp, info.dur = expirationTime, duration
+        -- kept for good: in combat the game hides it, and the countdown of a
+        -- proc seen only through the Cooldown Manager starts from this
         proc.lastDuration = duration
+        local byClass = ProcDocDB.durations[playerClass] or {}
+        ProcDocDB.durations[playerClass] = byClass
+        byClass[proc.key] = duration
     end
     if Readable(instanceID) then
         info.inst = instanceID
@@ -2989,7 +3055,7 @@ function CDM.Items()
         if type(viewer) == "table" and type(viewer.GetChildren) == "function" then
             for _, f in ipairs({ viewer:GetChildren() }) do
                 out[#out + 1] = f
-                if not CDM.hooked[f] then CDM.HookItem(f) end
+                if not CDM.hooked[f] then pcall(CDM.HookItem, f) end
             end
         end
     end
@@ -3030,7 +3096,7 @@ function CDM.Updated(f)
     if isHidden then info.secret = hidden end
     if not spent then
         local dur = proc.lastDuration or info.dur
-        info.exp, info.dur = now + dur, dur
+        if dur then info.exp, info.dur = now + dur, dur end
         if n == nil and proc.charges then
             info.charges = proc.chargesSeen or proc.charges
         elseif n == nil and (proc.dotSlots or proc.stackImages) then
@@ -3085,6 +3151,9 @@ function CDM.ProcFor(cooldownID, f)
                 for _, t in ipairs(p.talentIDs or {}) do
                     if t == id then proc = p end
                 end
+                for _, t in ipairs(p.cdmIDs or {}) do
+                    if t == id then proc = p end
+                end
             end
         end
         if not proc then
@@ -3124,6 +3193,9 @@ end
 -- which ProcDoc can't read but can hand to a bar to show (Pips.DrawSecret).
 function CDM.Stacks(f)
     local ad = f.auraDataCached                   -- the aura the icon shows (Blizzard_CooldownViewer)
+    -- In combat Forever can hide the whole aura, not just its numbers: then
+    -- there's nothing to read in it (looking inside errors)
+    if issecret(ad) then return nil, "auraDataCached (hidden in combat)" end
     if type(ad) == "table" then
         local v = ad.applications
         if issecret(v) then return nil, "auraDataCached (hidden in combat)", v end
@@ -3329,7 +3401,7 @@ function CDM.Poll()
     end
     CDM.wasLocked = true
     local want, how, gone, stacks, hiddenStacks = {}, {}, {}, {}, {}
-    for _, f in ipairs(CDM.Items()) do
+    local function Read(f)
         local proc = CDM.ProcFor(CDM.CooldownID(f), f)
         if proc and IsProcEnabled(proc) then
             local active, why = CDM.Active(f)
@@ -3347,14 +3419,28 @@ function CDM.Poll()
             end
         end
     end
+    -- Each icon on its own: one that hits a value the game hides can't stop
+    -- the others being read (4.13 lost every proc in combat that way)
+    for _, f in ipairs(CDM.Items()) do
+        local ok, err = pcall(Read, f)
+        if not ok then
+            ProcDoc_LastError = tostring(err)
+            if not CDM.readFailed then
+                CDM.readFailed = true
+                Trace("Cooldown Manager icon skipped: %s", tostring(err))
+            end
+        end
+    end
     for key, proc in pairs(want) do
         local info = CDM.live[key]
         if not info then
-            local dur = proc.lastDuration or proc.predictDuration or 10
+            -- how long it lasts, as last seen when the game showed it; never
+            -- seen yet: no countdown (a made-up one would be wrong)
+            local dur = proc.lastDuration or proc.predictDuration
             -- already up before the buffs were hidden: its real time left
             local a = alerts[key]
             local aura = a and a.sources.aura
-            local exp = (aura and aura.exp and aura.exp > now) and aura.exp or (now + dur)
+            local exp = (aura and aura.exp and aura.exp > now) and aura.exp or (dur and now + dur)
             -- full charges when it appears (as many as it has had for this player);
             -- a stacking proc starts at one (or what the buff check last saw)
             local charges = proc.chargesSeen or proc.charges
@@ -3659,6 +3745,9 @@ SyncCatalog = function()
                 for _, t in ipairs(p.talentIDs or {}) do
                     if t == sid then taken = p end                    -- e.g. Nightfall -> Shadow Trance
                 end
+                for _, t in ipairs(p.cdmIDs or {}) do
+                    if t == sid then taken = p end                    -- e.g. Arcane Concentration -> Clearcasting
+                end
             end
         end
         if not taken then
@@ -3864,6 +3953,96 @@ function CDM.Report()
     end
 end
 
+-- Procs the Cooldown Manager doesn't offer (Maelstrom Weapon), read in combat
+-- from the spell they change (`castSignal` = { spell, perStack, maxStacks }):
+-- each stack takes `perStack` off its mana cost, and Forever leaves a spell's
+-- cost and cast time readable in combat. The count is how far the cost is
+-- below the spell's own; out of combat (the buff readable) ProcDoc learns
+-- what the spell's own cost is, so talents and ranks are allowed for. A free
+-- cast at full stacks is also instant, which tells it from a cast made free
+-- by something else (Clearcasting). The proc's source is "signal"; a stack
+-- more starts its countdown over, and none left means it's gone.
+local Signal = { base = {}, live = {} }
+
+function Signal.ManaCost(id)
+    local costs = Clean(SafeCall(C_Spell and C_Spell.GetSpellPowerCost, id))
+    if type(costs) ~= "table" then return nil end
+    for _, c in ipairs(costs) do
+        local kind = type(c) == "table" and Clean(c.type)
+        if kind == 0 or (kind == nil and #costs == 1) then          -- (0 = mana)
+            local v = type(c) == "table" and Clean(c.cost)
+            if type(v) == "number" then return v end
+        end
+    end
+end
+
+-- Stacks from the spell right now, or nil when it can't tell
+function Signal.Read(proc, sig)
+    sig.name = sig.name or GetSpellNameCompat(sig.spell)
+    local info = sig.name and Clean(SafeCall(C_Spell and C_Spell.GetSpellInfo, sig.name))
+    local id = type(info) == "table" and Clean(info.spellID)
+    if not id then return nil end
+    local cost, ct = Signal.ManaCost(id), Clean(info.castTime)
+    if type(cost) ~= "number" or type(ct) ~= "number" then return nil end
+    local b = Signal.base[id] or {}
+    Signal.base[id] = b
+    if not auraLocked then
+        -- buffs readable: the stacks are known, so the spell's own cost is too
+        local a = alerts[proc.key]
+        local aura = a and a.sources.aura
+        local n = aura and (aura.stacks or 1) or 0
+        if n < sig.maxStacks then
+            b.cost = cost / (1 - sig.perStack * n)
+            if n == 0 then b.ct = ct end
+        end
+        return nil
+    end
+    if (b.cost or 0) < cost then b.cost = cost end                     -- (never calibrated: the most seen)
+    if (b.ct or 0) < ct then b.ct = ct end
+    if b.cost <= 0 then return nil end
+    if cost == 0 then
+        if ct == 0 and b.ct > 0 then return sig.maxStacks end
+        return nil                                                    -- free for another reason
+    end
+    local n = math.floor((1 - cost / b.cost) / sig.perStack + 0.5)
+    return math.max(0, math.min(sig.maxStacks, n))
+end
+
+function Signal.Poll()
+    local now = GetTime()
+    for _, proc in ipairs(buffProcs) do
+        local sig = proc.castSignal
+        if sig and IsProcEnabled(proc) then
+            local ok, n = pcall(Signal.Read, proc, sig)
+            local info = Signal.live[proc.key]
+            if not auraLocked then
+                if info then                                          -- the buff check rules again
+                    Signal.live[proc.key] = nil
+                    SetLive(proc, "signal", nil)
+                end
+            elseif ok and n and n > 0 then
+                local dur = proc.lastDuration or proc.baseDuration
+                if not info then
+                    info = {}
+                    Signal.live[proc.key] = info
+                    Trace("%s: %d stack(s), read from %s", proc.key, n, sig.name or "?")
+                end
+                if n > (info.stacks or 0) and dur then info.exp, info.dur = now + dur, dur end
+                info.stacks = n
+                SetLive(proc, "signal", info)
+            elseif ok and n == 0 then
+                local a = alerts[proc.key]
+                if info or (a and a.sources.aura) then
+                    Signal.live[proc.key] = nil
+                    SetLive(proc, "signal", nil)
+                    if a and a.sources.aura then ClearAuraSource(proc) end   -- spent mid-fight
+                    Trace("%s: none left (%s back to its own cost)", proc.key, sig.name or "?")
+                end
+            end
+        end
+    end
+end
+
 do
 local cdmFrame = CreateFrame("Frame", "ProcDocCooldownManagerFrame", UIParent)
 for _, ev in ipairs({ "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_TALENT_UPDATE", "CHARACTER_POINTS_CHANGED",
@@ -3877,6 +4056,7 @@ cdmFrame:SetScript("OnEvent", GuardedHandler(function(self, event)
         C_Timer.After(3, GuardedHandler(function() SyncCatalog() end))
         C_Timer.After(5, GuardedHandler(function() if initialized then CDM.Tip() end end))
     elseif not CDM.syncPending then                               -- new spells or talents: list them
+        wipe(Signal.base)                                         -- (a spell's own cost may have changed)
         CDM.syncPending = true
         C_Timer.After(1, GuardedHandler(function() CDM.syncPending = false; SyncCatalog() end))
     end
@@ -3886,6 +4066,7 @@ cdmFrame:SetScript("OnUpdate", GuardedHandler(function(self, dt)
     if CDM.elapsed < 0.1 or not initialized then return end
     CDM.elapsed = 0
     CDM.Poll()
+    Signal.Poll()
 end))
 end
 
