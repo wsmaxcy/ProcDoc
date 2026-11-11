@@ -345,7 +345,8 @@ end
 -- Your own casts change a proc too, and those ProcDoc does see in combat:
 -- `consumedBy` spends it ("ANY" = any spell; `sparedBy` lists exceptions,
 -- `keptDuring` another proc that shields it), `charges` is how many it holds,
--- and `gainedBy` = { spell = n } gives n charges and starts its time over.
+-- and `gainedBy` = { spell = n } gives n charges and starts its time over
+-- (not with `fixedTime`: that buff ends a set time after it first appeared).
 --
 -- These are the talent/ability reaction procs built into ProcDoc for WoW
 -- Forever. Anything else Forever flags with a proc glow is caught at
@@ -393,6 +394,23 @@ local PROC_DATA = {
             alertTexturePath = IMG .. "PinkRuneArc.tga",
             alertStyle       = "SIDES",
             consumedBy       = { "Arcane Missiles" },
+        },
+        {
+            buffName         = "Arcane Blast",    -- a stack with each cast, up to 4
+            spellIDs         = { 400573 },
+            cdmIDs           = { 400574 },
+            baseDuration     = 18,
+            fixedTime        = true,             -- (the game: all of them end 18 sec "from time of initial application")
+            alertTexturePath = IMG .. "ArcaneSealStage3.tga",
+            -- the art builds with the stacks: a seal each for 1-3, and at 4
+            -- the rune arc closes over them
+            stackImages      = { IMG .. "ArcaneSealStage1.tga", IMG .. "ArcaneSealStage2.tga",
+                                 IMG .. "ArcaneSealStage3.tga" },
+            capImage         = IMG .. "ArcaneRunes.tga",
+            alertStyle       = "SIDES2",
+            charges          = 4,
+            dotSlots         = 4,
+            gainedBy         = { ["Arcane Blast"] = 1 },   -- (the game hides the count in combat: your casts are counted)
         },
         {
             buffName         = "Fingers of Frost",
@@ -581,6 +599,7 @@ local CONSUMER_IDS = {
     ["Tranquilizing Shot"] = 19801, ["Holy Nova"] = 15237, ["Holy Light"] = 635, ["Sinister Strike"] = 1752,
     ["Backstab"] = 53, ["Hemorrhage"] = 16511, ["Ambush"] = 8676, ["Riposte"] = 14251,
     ["Ghostly Strike"] = 14278, ["Mutilate"] = 1329, ["Sniper Shot"] = 1310687, ["Pyroblast"] = 11366,
+    ["Arcane Blast"] = 400574,
 }
 
 local ACTION_PROCS = {
@@ -1304,6 +1323,94 @@ local function CreatePiece(a, index)
     return p
 end
 
+-- The full-stacks piece (`capImage`): one more image that joins the alert
+-- when its stacks go past the last of its `stackImages` (Arcane Blast's rune
+-- arc at 4, over its seals). It sits above the middle of the alert, a top
+-- row higher, at the alert's own size, and comes and goes with the stacks
+-- (section 5). It moves with the alert; dragged, it keeps its own distance
+-- from it (capX, capY). Not with the player's own image: that's shown as it is.
+function Pips.CapDragStop(c)
+    c:StopMovingOrSizing()
+    local cx, cy = c:GetCenter()
+    local ux, uy = ProcDoc:GetCenter()
+    if not cx or not ux then return end
+    local dx, dy = math.floor(cx - ux - c.homeX + 0.5), math.floor(cy - uy - c.homeY + 0.5)
+    if math.abs(dx) < 8 then dx = 0 end          -- snap back to its own spot
+    if math.abs(dy) < 8 then dy = 0 end
+    local s = PSW(c.alert.proc.key)
+    s.capX, s.capY = (dx ~= 0) and dx or nil, (dy ~= 0) and dy or nil
+    LayoutAlert(c.alert)
+    if RefreshOptions then RefreshOptions() end
+end
+
+function Pips.CapLayout(a, s, x, y, both, pixelScale)
+    local img = a.proc.capImage
+    local c = a.cap
+    if not img or s.image then
+        if c then c:Hide() end
+        a.capOn = nil
+        return
+    end
+    if not c then
+        c = CreateFrame("Frame", nil, UIParent)
+        c:SetFrameStrata("MEDIUM")
+        c:SetMovable(true)
+        c:SetClampedToScreen(true)
+        c:EnableMouse(false)
+        c:RegisterForDrag("LeftButton")
+        c.alert = a
+        c.bounds = c:CreateTexture(nil, "BACKGROUND")
+        c.bounds:SetAllPoints()
+        c.bounds:SetColorTexture(0.2, 0.7, 1, 0.12)
+        c.bounds:Hide()
+        c.tex = c:CreateTexture(nil, "ARTWORK")
+        c.tex:SetPoint("CENTER")
+        c.flash = c:CreateTexture(nil, "OVERLAY")
+        c.flash:SetPoint("CENTER")
+        c.flash:SetBlendMode("ADD")
+        c.flash:Hide()
+        c:SetScript("OnDragStart", function(self) if EditMode() then self:StartMoving() end end)
+        c:SetScript("OnDragStop", Pips.CapDragStop)
+        c:SetScript("OnMouseUp", function(self, button)
+            if EditMode() and button == "RightButton" and OpenOptions then
+                OpenOptions(self.alert.proc.key)
+            end
+        end)
+        c:SetScript("OnEnter", function(self)
+            if EditMode() then
+                ShowEditTip(self, self.alert.proc.buffName .. " at full stacks", "Drag: move", "Right-click: settings")
+            end
+        end)
+        c:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        c:Hide()
+        a.cap = c
+    end
+    local size = IMAGE_SIZE[img:lower()]
+    c.baseW, c.baseH = (size and size[1] or 256) * pixelScale, (size and size[2] or 128) * pixelScale
+    c:SetSize(c.baseW, c.baseH)
+    c.homeX, c.homeY = both and 0 or x, y + LAYOUT.topY + LAYOUT.top2 - LAYOUT.sideY
+    c:ClearAllPoints()
+    c:SetPoint("CENTER", ProcDoc, "CENTER", c.homeX + (s.capX or 0), c.homeY + (s.capY or 0))
+    c.tex:SetTexture(img)
+    c.flash:SetTexture(img)
+    c:EnableMouse(EditMode())
+    c.bounds:SetShown(unlockMode)
+end
+
+-- Draws it: opacity and size like the alert's own pieces, and its flash
+function Pips.CapDraw(c, alpha, size, flashA, flashSize)
+    c.tex:SetAlpha(alpha)
+    c.tex:SetSize(c.baseW * size, c.baseH * size)
+    if flashA > 0.01 then
+        c.flash:SetAlpha(flashA)
+        c.flash:SetSize(c.baseW * flashSize, c.baseH * flashSize)
+        c.flash:Show()
+    else
+        c.flash:Hide()
+    end
+    c:Show()
+end
+
 LayoutAlert = function(a)
     local proc = a.proc
     local s    = PS(proc.key)
@@ -1351,6 +1458,7 @@ LayoutAlert = function(a)
         a.pieces[i]:Hide()
     end
     a.numPieces = count
+    if proc.capImage or a.cap then Pips.CapLayout(a, s, x, y, both, pixelScale) end
 end
 
 local function GetAlert(proc)
@@ -1368,7 +1476,8 @@ local function HideAlertNow(a)
         p.exiting = nil
         p:Hide()
     end
-    a.shown, a.exitStart = false, nil
+    if a.cap then a.cap:Hide() end
+    a.shown, a.exitStart, a.capOn = false, nil, nil
 end
 
 -- Shows or hides an alert. Hiding plays the quick shrink-away (section 5)
@@ -1517,6 +1626,21 @@ local EXIT_SWELL = 0.25       -- share of EXIT_TIME spent on a tiny swell first
 local EXIT_PEAK  = 1.08       -- size at the top of that swell
 local EXIT_TO    = 0.15       -- size it shrinks down to before disappearing
 
+-- Pop-in at `t` (0 to 1 of POP_TIME): grows quickly to a peak past full size,
+-- then eases back. Returns the size, the opacity, and the flash's opacity and
+-- extra size.
+function Pips.Pop(t, popPeak)
+    local pop
+    if t < POP_RISE then
+        local x = 1 - t / POP_RISE
+        pop = POP_FROM + (popPeak - POP_FROM) * (1 - x * x)
+    else
+        local x = (t - POP_RISE) / (1 - POP_RISE)
+        pop = popPeak + (1 - popPeak) * (x * x * (3 - 2 * x))
+    end
+    return pop, math.min(1, t / 0.2), (1 - t) * (1 - t) * 0.9, 1 + 0.45 * t
+end
+
 -- Shrink-away: a tiny swell, then an accelerating shrink and fade, with a
 -- short flash that shrinks along with it. Starts from the size and opacity
 -- the alert had when the proc ended, so there's no jump.
@@ -1550,6 +1674,7 @@ local function AnimateExit(a, now)
             p.flash:Hide()
         end
     end
+    if a.capOn then Pips.CapDraw(a.cap, alpha, size, flashA, size * 1.1) end
 end
 local hasActionProcs = false
 local actionPollElapsed = 0
@@ -1618,17 +1743,7 @@ local function OnUpdateHandler(self, elapsed)
                 if t >= 1 or not popOn then
                     a.popStart = nil
                 else
-                    -- grow quickly to a peak past full size, then ease back
-                    if t < POP_RISE then
-                        local x = 1 - t / POP_RISE
-                        pop = POP_FROM + (popPeak - POP_FROM) * (1 - x * x)
-                    else
-                        local x = (t - POP_RISE) / (1 - POP_RISE)
-                        pop = popPeak + (1 - popPeak) * (x * x * (3 - 2 * x))
-                    end
-                    popAlpha = math.min(1, t / 0.2)
-                    flashA = (1 - t) * (1 - t) * 0.9
-                    flashGrow = 1 + 0.45 * t
+                    pop, popAlpha, flashA, flashGrow = Pips.Pop(t, popPeak)
                 end
             end
 
@@ -1680,6 +1795,21 @@ local function OnUpdateHandler(self, elapsed)
                         a.pieces[i].flash:SetTexture(want)
                     end
                     a.curImage = want
+                end
+                -- Past the last of them, the full-stacks piece joins in
+                -- (`capImage`: Arcane Blast's rune arc at 4), with a pop of
+                -- its own when the stacks are real (a preview just counts).
+                -- While the alerts are unlocked it's there to be placed.
+                local cap = a.cap
+                if cap and (unlockMode or (n and n > #stackImgs)) then
+                    a.capOn = a.capOn or now
+                    local cPop, cAlpha, cFlash, cGrow = 1, 1, 0, 1
+                    local t = (now - a.capOn) / POP_TIME
+                    if t < 1 and popOn and a.live then cPop, cAlpha, cFlash, cGrow = Pips.Pop(t, popPeak) end
+                    Pips.CapDraw(cap, alpha * cAlpha, pulse * cPop, cFlash * (s.alpha or 1), cPop * cGrow)
+                elseif cap and a.capOn then
+                    a.capOn = nil
+                    cap:Hide()
                 end
             end
             local pr, pg, pb = ColorRGB(s.pipColor or "gold")
@@ -1890,11 +2020,13 @@ local function BuildClassProcs()
                     or (info.name and buffByName[info.name]))
             if builtin and not builtin.custom and not builtin.auto then
                 -- a buff the player added that's now built in: keep their look
-                -- (not the spot for one-side-per-stack procs: they start as a pair)
+                -- (not the spot for one-side-per-stack procs, which start as a
+                -- pair, nor the spot and image where the art builds with the stacks)
                 local all = ClassSettings()
                 local s = all[key]
                 if s and not all[builtin.key] then
-                    if builtin.sidesByStacks then s.px, s.py, s.both, s.region = nil, nil, nil, nil end
+                    if builtin.sidesByStacks or builtin.stackImages then s.px, s.py, s.both, s.region = nil, nil, nil, nil end
+                    if builtin.stackImages then s.image, s.imageCustom = nil, nil end
                     all[builtin.key] = s
                 end
                 all[key] = nil
@@ -2391,11 +2523,15 @@ end
 
 -- Your own cast gives or renews a proc while the game hides it:
 --   * `gainedBy` (Eclipse: each Wrath gives 2 charges, up to its `charges`)
---   * a cast with the buff's own name renews it (Arcane Blast, Slice and Dice)
--- Its countdown starts over and the charges are added. A proc that isn't up
--- yet remembers the gain for when its Cooldown Manager icon lights up.
+--   * a cast with the buff's own name renews it (Slice and Dice)
+-- Its countdown starts over and the charges are added. A `fixedTime` proc
+-- (Arcane Blast) only gains: its time runs from the first cast, so only a
+-- cast after that time has run out starts it again. A proc that isn't up
+-- (or a cast just before the fight) is remembered for when its Cooldown
+-- Manager icon lights up.
 function Predict.Gain(castName)
-    if not castName or not (auraLocked or Remind.InCombat()) then return end
+    if not castName then return end
+    local hidden = auraLocked or Remind.InCombat()
     local now = GetTime()
     for _, proc in ipairs(buffProcs) do
         local gain = proc.gainSet and proc.gainSet[castName]
@@ -2404,11 +2540,17 @@ function Predict.Gain(castName)
             local a = alerts[proc.key]
             local any = false
             for _, name in ipairs(Predict.GAIN_SOURCES) do
-                local src = a and a.sources[name]
+                local src = hidden and a and a.sources[name]      -- (readable buffs speak for themselves)
                 if src and not src.predicted then
                     any = true
                     local dur = proc.lastDuration or src.dur
-                    if dur then src.exp, src.dur = now + dur, dur end
+                    if proc.fixedTime then
+                        if dur and src.exp and now >= src.exp then
+                            src.exp, src.dur, src.charges = now + dur, dur, 0
+                        end
+                    elseif dur then
+                        src.exp, src.dur = now + dur, dur
+                    end
                     if gain and proc.charges then
                         src.charges = math.min(proc.charges, (src.charges or 0) + gain)
                         if src.stacks then src.stacks = src.charges end
@@ -2663,6 +2805,9 @@ local IconState  -- forward (section 9): what the ability's Cooldown Manager ico
 -- from, the ability's icon on the Cooldown Manager (greyed while on
 -- cooldown; no times, and right after a cast it can still say "ready" for a
 -- moment, so it's the last resort).
+-- A count can't know about a cooldown that's reset early (Improved
+-- Stormstrike: a dodge or parry can reset Stormstrike). The icon does: once
+-- it has shown this cooldown running, its saying "back" ends the count.
 local function SpellOnCooldown(proc, st, now)
     local start, duration = GetSpellCooldownCompat(proc.localName)
     if Readable(start) and Readable(duration) and start and duration then
@@ -2680,7 +2825,18 @@ local function SpellOnCooldown(proc, st, now)
     end
     if len and st.lastCast then
         local ends = st.lastCast + len
-        if now < ends then return true, "since cast", ends, len end
+        if now < ends then
+            local _, _, icon = nil, nil, nil
+            if IconState then _, _, icon = IconState(proc) end
+            if icon == "on" then
+                st.iconOn = true
+            elseif icon == "off" and st.iconOn then
+                st.lastCast, st.iconOn = nil, nil
+                Trace("%s is back early: its cooldown was reset", proc.key)
+                return false, "reset"
+            end
+            return true, "since cast", ends, len
+        end
         return false, "since cast"
     end
     local icon = IconState and IconState(proc)
@@ -2981,7 +3137,7 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
             if proc then
                 local st = actionState[proc.key] or {}
                 actionState[proc.key] = st
-                st.lastCast, st.reactUntil = GetTime(), nil
+                st.lastCast, st.reactUntil, st.iconOn = GetTime(), nil, nil
                 if proc.cdOnly then
                     st.suppressed = false                    -- a cast starts the cooldown countdown
                 elseif st.active then
@@ -3300,6 +3456,17 @@ IconState = function(proc)
                 if CDM.ActionFor(CDM.CooldownID(f), f) == proc then
                     local icon = type(f.Icon) == "table" and f.Icon or nil
                     local on = Clean(f.isOnActualCooldown)
+                    -- For spotting a reset (SpellOnCooldown): "on" only while the
+                    -- icon's own clock is still running (once a cooldown has run
+                    -- out it can go on saying "on cooldown" until its next
+                    -- update), "off" when it says the ability is back
+                    local state
+                    if on == false then
+                        state = "off"
+                    elseif on == true and type(f.IsOnCooldown) == "function"
+                        and Clean(SafeCall(f.IsOnCooldown, f)) == true then
+                        state = "on"
+                    end
                     if type(on) ~= "boolean" then
                         on = icon and Clean(SafeCall(icon.IsDesaturated, icon))
                         if type(on) ~= "boolean" then on = nil end
@@ -3314,7 +3481,7 @@ IconState = function(proc)
                                 or (r > g + 0.3 and "range") or "unusable"
                         end
                     end
-                    return on, tint
+                    return on, tint, state
                 end
             end
         end
@@ -3611,7 +3778,7 @@ function CDM.UnhideRows(r)
             for _, st in ipairs(s.settings) do
                 if st.setting == set.VisibleSetting and st.value == vis.Hidden then
                     st.value = vis.Always
-                    r.keep[name] = true
+                    if not r.showNext then r.keep[name] = true end      -- (/procdoc cdm show: the player wants to see it)
                     changed = true
                     Trace("setup: %s set from Hidden to Always (ProcDoc keeps it hidden)", name)
                 end
@@ -3627,6 +3794,49 @@ function CDM.Setup()
     local r = CDM.Record()
     CDM.TrackWanted()
     CDM.UnhideRows(r)
+    r.showNext = nil
+end
+
+-- /procdoc check: can the Cooldown Manager's buff rows see your buffs? Not one
+-- that's set to Hidden in Edit Mode (ProcDoc changes that at the next logout
+-- or /reload), nor one that isn't showing for any other reason, and not at
+-- all while the game says the Cooldown Manager isn't available. Returns the
+-- lines to print and how many of them are problems.
+function CDM.RowNotes()
+    local vis = Enum and Enum.CooldownViewerVisibleSetting
+    local lines, bad = {}, 0
+    local api = C_CooldownViewer
+    if api and api.IsCooldownViewerAvailable then
+        local ok, why = SafeCall(api.IsCooldownViewerAvailable)
+        ok, why = Clean(ok), Clean(why)
+        if ok == false then
+            lines[1] = "|cffff5555the game says the Cooldown Manager isn't available on this character|r" ..
+                ((type(why) == "string" and why ~= "") and (" (" .. why .. ")") or "") ..
+                ": until it is, ProcDoc sees your buff procs only out of combat"
+            return lines, 1
+        end
+    end
+    for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
+        local v, label = _G[name], CDM.BUFF_ROWS[name]
+        if type(v) == "table" then
+            local setting = Clean(v.visibleSetting)
+            if vis and setting ~= nil and setting == vis.Hidden then
+                bad = bad + 1
+                lines[#lines + 1] = "|cffff5555" .. label .. " is set to Hidden in Edit Mode|r, so it can't see your buffs: " ..
+                    "ProcDoc sets it to always visible at your next |cff00ffff/reload|r (and keeps it out of sight itself)"
+            elseif vis and setting ~= nil and setting == vis.InCombat then
+                lines[#lines + 1] = label .. ": visible in combat (Edit Mode), which is when ProcDoc reads it"
+            elseif Clean(SafeCall(v.IsShown, v)) == false then
+                bad = bad + 1
+                lines[#lines + 1] = "|cffff5555" .. label .. " isn't showing|r although Edit Mode has it visible: " ..
+                    "something else is hiding it, and a hidden row can't see your buffs"
+            else
+                local mine = CDM.holder and SafeCall(v.GetParent, v) == CDM.holder
+                lines[#lines + 1] = label .. ": visible in Edit Mode" .. (mine and " (ProcDoc keeps it out of sight)" or "")
+            end
+        end
+    end
+    return lines, bad
 end
 
 -- Is one of the Cooldown Manager's buff icons watching this proc? (The
@@ -3736,11 +3946,11 @@ function CDM.Tip()
             end
             return
         end
-        if not ProcDocDB.cdmAutoOn[who] then
-            ProcDocDB.cdmAutoOn[who] = true
-            Print("turned on Blizzard's Cooldown Manager so ProcDoc can catch your procs mid-fight" ..
-                (G.cdmHideBuffs and " (its icons stay hidden; you'll see ProcDoc's alerts)" or "") .. ".")
-        end
+        -- (said every time: it was switched off, most likely to get it off the screen)
+        ProcDocDB.cdmAutoOn[who] = true
+        Print("turned on Blizzard's Cooldown Manager: it's how ProcDoc catches your procs mid-fight. " ..
+            (G.cdmHideBuffs and "Its icons stay hidden; you'll see ProcDoc's alerts." or
+                "Don't want it on screen? Type |cff00ffff/procdoc cdm hide|r and it keeps working out of sight."))
         Trace("Cooldown Manager switched on")
         C_Timer.After(1, GuardedHandler(function() CDM.Tip() end))   -- then what to set up
         return
@@ -3766,6 +3976,35 @@ function CDM.TurnOn()
         Print("turned on Blizzard's Cooldown Manager.")
     end
     C_Timer.After(1, GuardedHandler(function() CDM.Tip() end))
+end
+
+-- /procdoc cdm hide | show: the same switch as "Hide its icons" in Settings >
+-- Setup. Hidden, the Cooldown Manager keeps running out of sight (switching
+-- it off, or setting it to Hidden in Edit Mode, would blind ProcDoc in combat).
+function CDM.SetHidden(hide)
+    G.cdmHideBuffs = hide
+    if not hide then wipe(CDM.Record().keep) end                   -- show every row again
+    if CDM.Enabled() == false then SetCVarCompat("cooldownViewerEnabled", "1") end
+    CDM.ApplyHide()
+    local later = (InCombatLockdown and InCombatLockdown()) and " (when this fight ends)" or ""
+    if hide then
+        Print("Blizzard's Cooldown Manager is now hidden" .. later .. ". It keeps running out of sight, so ProcDoc " ..
+            "still catches your procs mid-fight. To see it again: |cff00ffff/procdoc cdm show|r")
+    else
+        Print("Blizzard's Cooldown Manager is shown again" .. later ..
+            ". To hide it without switching it off: |cff00ffff/procdoc cdm hide|r")
+    end
+    -- a row set to Hidden in Edit Mode can't see buffs, and stays that way until the next logout or /reload
+    local rows, names = CDM.HiddenRows(), {}
+    for _, row in ipairs(rows) do names[#names + 1] = CDM.BUFF_ROWS[row] end
+    CDM.Record().showNext = (#rows > 0 and not hide) or nil
+    if #rows > 0 then
+        Print("|cffffd100" .. table.concat(names, " and ") .. "|r " .. (#rows > 1 and "are" or "is") ..
+            " set to Hidden in Edit Mode, and a hidden row can't see your buffs. Type |cff00ffff/reload|r: ProcDoc then sets " ..
+            (#rows > 1 and "them" or "it") .. " to always visible" ..
+            (hide and (" and keeps " .. (#rows > 1 and "them" or "it") .. " out of sight itself.") or "."))
+    end
+    if RefreshOptions then RefreshOptions() end
 end
 
 -- /procdoc cdm: what the Cooldown Manager is tracking and what ProcDoc reads from it
@@ -4007,9 +4246,11 @@ function CDM.Check()
     local on = CDM.Enabled()
     Print("Blizzard's Cooldown Manager: " .. ((on == true and "on") or
         (on == false and "|cffff5555off|r (type |cff00ffff/procdoc cdm on|r)") or "can't tell"))
-    for _, row in ipairs(CDM.HiddenRows()) do
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffff5555" .. (CDM.BUFF_ROWS[row] or row) .. " is set to Hidden in Edit Mode|r: "
-            .. "ProcDoc fixes it at your next /reload")
+    local rowBad = 0
+    if on ~= false then                                  -- (off: every row is hidden, and the line above says so)
+        local rowLines
+        rowLines, rowBad = CDM.RowNotes()
+        for _, line in ipairs(rowLines) do DEFAULT_CHAT_FRAME:AddMessage("  " .. line) end
     end
     local watched, offered = {}, {}
     for _, f in ipairs(CDM.Items()) do
@@ -4042,7 +4283,7 @@ function CDM.Check()
             DEFAULT_CHAT_FRAME:AddMessage("  " .. proc.buffName .. ": " .. how)
         end
     end
-    if bad == 0 and #problems == 0 and on ~= false then Print("everything checks out.") end
+    if bad == 0 and rowBad == 0 and #problems == 0 and on ~= false then Print("everything checks out.") end
 end
 
 do
@@ -5722,7 +5963,7 @@ function ProcUI.Place(page, st, child)
     local resetPos = CreateFlatButton(child, "Reset position", half, 24, function()
         if not pageProc then return end
         local s = PSW(pageProc.key)
-        s.px, s.py, s.both, s.region = nil, nil, nil, nil
+        s.px, s.py, s.both, s.region, s.capX, s.capY = nil, nil, nil, nil, nil, nil
         ProcUI.Refresh()
         ProcUI.Changed()
     end)
@@ -6075,7 +6316,7 @@ local function BuildGeneralPage(parent)
             G.cdmHideBuffs = v
             if not v then wipe(CDM.Record().keep) end                   -- show every row again
         end,
-        "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts. Leave it off if you use the Cooldown Manager yourself, or an addon that restyles it."), 16, nil, 14)
+        "Makes all of Blizzard's Cooldown Manager icons invisible: Tracked Buffs, Essential Cooldowns and Utility Cooldowns. They show while Edit Mode is open, and keep working, so ProcDoc still reads them; you just see ProcDoc's alerts. Leave it off if you use the Cooldown Manager yourself, or an addon that restyles it. Also: /procdoc cdm hide and /procdoc cdm show"), 16, nil, 14)
 
     st:Add(CreateHeader(child, "Window & minimap", COL), 18)
     st:Add(CreateCheck(child, "Show minimap button",
@@ -6680,7 +6921,14 @@ SlashCmdList["PROCDOC"] = function(msg)
     elseif cmd == "buffs" then
         PrintBuffs()
     elseif cmd == "cdm" then
-        if (msg or ""):lower():match("^%s*%S+%s+on%s*$") then CDM.TurnOn() else CDM.Report() end
+        local sub = (msg or ""):lower():match("^%s*%S+%s+(%S+)")
+        if sub == "on" then
+            CDM.TurnOn()
+        elseif sub == "hide" or sub == "show" then
+            CDM.SetHidden(sub == "hide")
+        else
+            CDM.Report()
+        end
     elseif cmd == "check" then
         CDM.Check()
     elseif cmd == "stacktest" then
@@ -6742,7 +6990,7 @@ SlashCmdList["PROCDOC"] = function(msg)
         SetMinimapButtonShown(G.minimapHide)
         Print("minimap button " .. (G.minimapHide and "hidden." or "shown."))
     elseif cmd == "help" then
-        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [on], check, trace, debug")
+        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [hide | show], check, trace, debug")
     else
         ToggleOptions()
     end
