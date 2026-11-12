@@ -3692,21 +3692,24 @@ function CDM.HiddenRows()
 end
 
 -- Spells this character knows for ProcDoc's enabled buff procs, in the
--- Cooldown Manager's buff lists: { cid = cooldownID, proc = proc }
+-- Cooldown Manager's buff lists: { cid = cooldownID, proc = proc }. Second
+-- value: every proc those lists have at all (key -> true), learned or not:
+-- one that's listed but not wanted is a talent this character doesn't have.
 function CDM.Wanted()
     local api, cats = C_CooldownViewer, Enum and Enum.CooldownViewerCategory
-    local out = {}
-    if not (api and api.GetCooldownViewerCategorySet and cats) then return out end
+    local out, listed = {}, {}
+    if not (api and api.GetCooldownViewerCategorySet and cats) then return out, listed end
     for _, cat in ipairs({ cats.TrackedBuff, cats.TrackedBar }) do
         local ids = Clean(SafeCall(api.GetCooldownViewerCategorySet, cat, true))
         for _, cid in ipairs(type(ids) == "table" and ids or {}) do
             cid = Clean(cid)
             local p = cid and CDM.ProcFor(cid)
+            if p then listed[p.key] = true end
             local info = p and IsProcEnabled(p) and Clean(SafeCall(api.GetCooldownViewerCooldownInfo, cid))
             if type(info) == "table" and Clean(info.isKnown) then out[#out + 1] = { cid = cid, proc = p } end
         end
     end
-    return out
+    return out, listed
 end
 
 -- What's left to do on this character at the next logout or /reload (only
@@ -3797,13 +3800,45 @@ function CDM.Setup()
     r.showNext = nil
 end
 
+-- Can a buff row see your buffs? "hidden" (set to Hidden in Edit Mode: it
+-- stops watching), "combat" (visible in combat only, which is when ProcDoc
+-- reads it), "blocked" (not showing for some other reason), "ok"; nil when
+-- the game has no such row.
+function CDM.RowState(name)
+    local v = _G[name]
+    if type(v) ~= "table" then return nil end
+    local vis = Enum and Enum.CooldownViewerVisibleSetting
+    local setting = Clean(v.visibleSetting)
+    if vis and setting ~= nil and setting == vis.Hidden then return "hidden" end
+    if vis and setting ~= nil and setting == vis.InCombat then return "combat" end
+    if Clean(SafeCall(v.IsShown, v)) == false then return "blocked" end
+    return "ok"
+end
+
+-- Your ticked buff procs that nothing can see in combat: not in the Cooldown
+-- Manager's lists at all, and no other signal (names, for the setup wizard)
+function CDM.Unseen()
+    local watched, out = {}, {}
+    for _, f in ipairs(CDM.Items()) do
+        local p = CDM.ProcFor(CDM.CooldownID(f), f)
+        if p then watched[p.key] = true end
+    end
+    local _, listed = CDM.Wanted()
+    for _, proc in ipairs(classProcs) do
+        if IsProcEnabled(proc) and not proc.isAction and not watched[proc.key] and not listed[proc.key]
+            and not proc.castSignal and not proc.predictOn then
+            out[#out + 1] = proc.buffName
+        end
+    end
+    return out
+end
+
 -- /procdoc check: can the Cooldown Manager's buff rows see your buffs? Not one
 -- that's set to Hidden in Edit Mode (ProcDoc changes that at the next logout
 -- or /reload), nor one that isn't showing for any other reason, and not at
 -- all while the game says the Cooldown Manager isn't available. Returns the
 -- lines to print and how many of them are problems.
 function CDM.RowNotes()
-    local vis = Enum and Enum.CooldownViewerVisibleSetting
     local lines, bad = {}, 0
     local api = C_CooldownViewer
     if api and api.IsCooldownViewerAvailable then
@@ -3817,23 +3852,20 @@ function CDM.RowNotes()
         end
     end
     for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
-        local v, label = _G[name], CDM.BUFF_ROWS[name]
-        if type(v) == "table" then
-            local setting = Clean(v.visibleSetting)
-            if vis and setting ~= nil and setting == vis.Hidden then
-                bad = bad + 1
-                lines[#lines + 1] = "|cffff5555" .. label .. " is set to Hidden in Edit Mode|r, so it can't see your buffs: " ..
-                    "ProcDoc sets it to always visible at your next |cff00ffff/reload|r (and keeps it out of sight itself)"
-            elseif vis and setting ~= nil and setting == vis.InCombat then
-                lines[#lines + 1] = label .. ": visible in combat (Edit Mode), which is when ProcDoc reads it"
-            elseif Clean(SafeCall(v.IsShown, v)) == false then
-                bad = bad + 1
-                lines[#lines + 1] = "|cffff5555" .. label .. " isn't showing|r although Edit Mode has it visible: " ..
-                    "something else is hiding it, and a hidden row can't see your buffs"
-            else
-                local mine = CDM.holder and SafeCall(v.GetParent, v) == CDM.holder
-                lines[#lines + 1] = label .. ": visible in Edit Mode" .. (mine and " (ProcDoc keeps it out of sight)" or "")
-            end
+        local v, label, state = _G[name], CDM.BUFF_ROWS[name], CDM.RowState(name)
+        if state == "hidden" then
+            bad = bad + 1
+            lines[#lines + 1] = "|cffff5555" .. label .. " is set to Hidden in Edit Mode|r, so it can't see your buffs: " ..
+                "ProcDoc sets it to always visible at your next |cff00ffff/reload|r (and keeps it out of sight itself)"
+        elseif state == "combat" then
+            lines[#lines + 1] = label .. ": visible in combat (Edit Mode), which is when ProcDoc reads it"
+        elseif state == "blocked" then
+            bad = bad + 1
+            lines[#lines + 1] = "|cffff5555" .. label .. " isn't showing|r although Edit Mode has it visible: " ..
+                "something else is hiding it, and a hidden row can't see your buffs"
+        elseif state then
+            local mine = CDM.holder and SafeCall(v.GetParent, v) == CDM.holder
+            lines[#lines + 1] = label .. ": visible in Edit Mode" .. (mine and " (ProcDoc keeps it out of sight)" or "")
         end
     end
     return lines, bad
@@ -4257,7 +4289,8 @@ function CDM.Check()
         local p = CDM.ProcFor(CDM.CooldownID(f), f)
         if p then watched[p.key] = true end
     end
-    for _, w in ipairs(CDM.Wanted()) do offered[w.proc.key] = true end
+    local wanted, listed = CDM.Wanted()
+    for _, w in ipairs(wanted) do offered[w.proc.key] = true end
     local bad = 0
     Print("your procs in combat:")
     for _, proc in ipairs(classProcs) do
@@ -4274,6 +4307,8 @@ function CDM.Check()
                 how = "|cffffd100in the Cooldown Manager's list, not tracked yet|r: "
                     .. "ProcDoc adds it at your next /reload"
                 bad = bad + 1
+            elseif listed[proc.key] then
+                how = "not learned on this character (it shows mid-fight once you have it)"
             elseif proc.predictOn then
                 how = "lit by your killing blow (the Cooldown Manager doesn't list it)"
             else
@@ -4298,6 +4333,8 @@ cdmFrame:SetScript("OnEvent", GuardedHandler(function(self, event)
     elseif event == "PLAYER_ENTERING_WORLD" then
         C_Timer.After(3, GuardedHandler(function() SyncCatalog() end))
         C_Timer.After(5, GuardedHandler(function() if initialized then CDM.Tip() end end))
+        -- (the setup wizard, the first time ProcDoc runs: section 13)
+        C_Timer.After(6, GuardedHandler(function() if CDM.Wizard then CDM.Wizard.Auto() end end))
     elseif not CDM.syncPending then                               -- new spells or talents: list them
         CDM.syncPending = true
         C_Timer.After(1, GuardedHandler(function() CDM.syncPending = false; SyncCatalog() end))
@@ -6292,6 +6329,9 @@ local function BuildGeneralPage(parent)
 
     -- Setup: what ProcDoc watches, Blizzard's Cooldown Manager, this window
     Fill("Setup")
+    st:Add(CreateHeader(child, "Getting started", COL), 18)
+    AttachTooltip(st:Add(CreateFlatButton(child, "Run the setup wizard", 170, 24, function() CDM.Wizard.Show(1) end), 24, nil, 14),
+        "Setup wizard", "Walks you through ProcDoc again: what it needs to see your procs in combat, hiding Blizzard's Cooldown Manager, where your alerts are picked and arranged, and what to do when a proc doesn't show. Also: /procdoc setup")
     st:Add(CreateHeader(child, "Detection", COL), 18)
     st:Add(CreateCheck(child, "Auto-detect other procs",
         function() return G.autoDetect end,
@@ -6843,6 +6883,410 @@ RefreshOptions = function(rebuildList)
     end
 end
 
+-- The setup wizard --------------------------------------------------------
+-- A small window that walks a new player through ProcDoc: what it does, the
+-- one thing it needs (Blizzard's Cooldown Manager: where the setup stands
+-- right now, and a Reload button when a /reload would finish it), whether to
+-- keep that on screen, where alerts are picked and arranged, and what to do
+-- when a proc doesn't show. It opens by itself the first time ProcDoc runs
+-- (ProcDocDB.wizardSeen, account-wide); after that from Settings > Setup or
+-- /procdoc setup. Reloading from it brings it back at the same step
+-- (ProcDocDB.wizardStep).
+--
+-- In Forever it looks like a quest being offered: the game's own quest
+-- window (Blizzard's standard frame with ProcDoc in the portrait, around the
+-- quest parchment), each step's title in the quest heading font over the
+-- quest log's divider, its text in ink, and the quest log's sounds. Where
+-- that art is missing: the classic gold dialog, light text on dark.
+local Wizard = { step = 1 }
+CDM.Wizard = Wizard
+Wizard.MARK = {
+    ok   = "|TInterface\\RaidFrame\\ReadyCheck-Ready:14:14|t ",
+    wait = "|TInterface\\RaidFrame\\ReadyCheck-Waiting:14:14|t ",
+    bad  = "|TInterface\\RaidFrame\\ReadyCheck-NotReady:14:14|t ",
+}
+-- Text colours: names, commands, good, bad, asides; then the ink itself
+-- (nil: the font's own), for the parchment and for the dark dialog
+Wizard.INK = {
+    quest = { hl = "|cff7a2a00", cmd = "|cff0b3d91", good = "|cff1a6b1a", bad = "|cffa01010", dim = "|cff6b5a45",
+              text = { 0.18, 0.12, 0.06 }, title = { 0.1, 0.05, 0 } },
+    dark  = { hl = "|cffffd100", cmd = "|cff00ffff", good = "|cff40ff40", bad = "|cffff5555", dim = "|cff999999" },
+}
+Wizard.C = Wizard.INK.dark
+
+-- One of the quest log's sounds, where the game has it
+function Wizard.Sound(name)
+    local kit = SOUNDKIT and SOUNDKIT[name]
+    if kit then pcall(PlaySound, kit) end
+end
+
+-- Where the Cooldown Manager setup stands on this character: the lines to
+-- show, whether a /reload would finish something, and whether it's off
+function Wizard.Status()
+    local M, C = Wizard.MARK, Wizard.C
+    local lines = {}
+    local on = CDM.Enabled()
+    if not C_CooldownViewer or on == nil then
+        lines[1] = M.bad .. "This game has no Cooldown Manager, so buff procs only show out of combat."
+        return lines, false, false
+    end
+    if not on then
+        lines[1] = M.bad .. "The Cooldown Manager is " .. C.bad .. "off|r, so buff procs only show out of combat."
+        return lines, false, true
+    end
+    lines[1] = M.ok .. "The Cooldown Manager is on."
+    local todo, hidden = CDM.SetupPending()
+    local blocked = {}
+    for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
+        if CDM.RowState(name) == "blocked" then blocked[#blocked + 1] = CDM.BUFF_ROWS[name] end
+    end
+    if #hidden > 0 then
+        local names = {}
+        for _, row in ipairs(hidden) do names[#names + 1] = CDM.BUFF_ROWS[row] end
+        lines[#lines + 1] = M.wait .. table.concat(names, " and ") .. (#names > 1 and " are" or " is") ..
+            " set to Hidden in Edit Mode, and a hidden row can't see your buffs."
+    elseif #blocked > 0 then
+        lines[#lines + 1] = M.bad .. table.concat(blocked, " and ") .. (#blocked > 1 and " aren't" or " isn't") ..
+            " showing: another addon may be hiding " .. (#blocked > 1 and "them." or "it.")
+    else
+        lines[#lines + 1] = M.ok .. "Its Tracked Buffs row can see your buffs."
+    end
+    if #todo > 0 then
+        lines[#lines + 1] = M.wait .. "Not tracked yet: " .. C.hl .. table.concat(todo, ", ") .. "|r."
+    else
+        lines[#lines + 1] = M.ok .. "Your procs are tracked."
+    end
+    local pending = #hidden > 0 or #todo > 0
+    local unseen = CDM.Unseen()
+    if pending then
+        lines[#lines + 1] = "One thing left: reload, and ProcDoc finishes the setup for you."
+    elseif #unseen > 0 then
+        lines[#lines + 1] = "The Cooldown Manager doesn't list " .. C.hl .. table.concat(unseen, ", ") ..
+            "|r, so " .. (#unseen > 1 and "those show" or "that shows") .. " out of combat only."
+    elseif #blocked == 0 then
+        lines[#lines + 1] = C.good .. "All set.|r Your procs will show in the middle of a fight."
+    end
+    return lines, pending, false
+end
+
+-- Reloads, and comes back to this step afterwards
+function Wizard.Reload()
+    ProcDocDB.wizardStep = Wizard.step
+    local ui = _G.C_UI
+    local reload = _G.ReloadUI or (ui and ui.Reload)
+    if reload then reload() else Print("type |cff00ffff/reload|r to finish the setup.") end
+end
+
+-- Each step: its title, its text, status lines and up to two buttons
+Wizard.STEPS = {
+    function(C)                                  -- 1) what ProcDoc does
+        local names = {}
+        for _, proc in ipairs(classProcs) do
+            if IsProcEnabled(proc) then names[#names + 1] = proc.buffName end
+        end
+        local first = {}
+        for i = 1, math.min(#names, 8) do first[i] = names[i] end
+        local list = table.concat(first, ", ") .. (#names > 8 and (" and " .. (#names - 8) .. " more") or "")
+        return {
+            title = "Welcome to ProcDoc",
+            text = "ProcDoc puts a big alert around your character the moment something procs, so you never have to " ..
+                "watch your buff bar for it.\n\n" ..
+                (#names > 0 and ("It's already watching these for you: " .. C.hl .. list .. "|r.")
+                    or "Nothing is switched on for your class yet: you pick what to watch in step 4.") ..
+                "\n\nThis takes about a minute. You can run it again from " .. C.cmd .. "/procdoc|r > Settings > Setup.",
+            buttons = #names > 0 and { { "Show me my alerts", function() TestAll(8) end } } or nil,
+        }
+    end,
+    function()                                   -- 2) the Cooldown Manager
+        local lines, pending, off = Wizard.Status()
+        local buttons
+        if off then
+            buttons = { { "Turn it on", function() CDM.TurnOn() end } }
+        elseif pending then
+            buttons = { { "Reload now", Wizard.Reload } }
+        end
+        return {
+            title = "Seeing procs in combat",
+            text = "In combat the game hides your buffs from addons. Blizzard's Cooldown Manager can still see them, " ..
+                "so ProcDoc reads your procs from it, and sets it up for you:",
+            lines = lines, buttons = buttons,
+        }
+    end,
+    function(C)                                  -- 3) on screen or not
+        return {
+            title = "On screen, or out of sight?",
+            text = "The Cooldown Manager puts its own rows of icons on your screen. ProcDoc only needs it running, " ..
+                "not visible, so you can hide them.\n\nDon't switch it off, and don't set it to Hidden in Edit Mode: " ..
+                "both stop your procs showing in combat.",
+            lines = { "Right now its icons are " .. C.hl .. (G.cdmHideBuffs and "hidden" or "on screen") .. "|r.",
+                      C.dim .. "Later: Settings > Setup, or /procdoc cdm hide and /procdoc cdm show.|r" },
+            buttons = { { "Hide its icons", function() CDM.SetHidden(true) end },
+                        { "Keep them on screen", function() CDM.SetHidden(false) end } },
+        }
+    end,
+    function()                                   -- 4) picking and arranging alerts
+        return {
+            title = "Your alerts",
+            text = "Your class procs are ticked already. Every other spell from your Cooldown Manager is in the same " ..
+                "list: tick one and it gets an alert too.\n\nTo move an alert, drag it. To resize it, hold Shift and " ..
+                "roll the mouse wheel over it. Right-click it for its own settings: image, sound, countdown.",
+            buttons = { { "Open my proc list", function() OpenOptions(); SelectView("LIST") end },
+                        { unlockMode and "Lock my alerts" or "Arrange my alerts", function() SetUnlocked(not unlockMode) end } },
+        }
+    end,
+    function(C)                                  -- 5) when something doesn't show
+        return {
+            title = "If a proc doesn't show",
+            text = "Type " .. C.cmd .. "/procdoc check|r. It tells you whether the Cooldown Manager is on, whether it can " ..
+                "see your buffs, and how each of your procs is seen in combat. It's also what to paste when you report " ..
+                "a problem.\n\n" .. C.cmd .. "/procdoc|r opens the options (so does a left-click on the minimap button).\n" ..
+                C.cmd .. "/procdoc setup|r runs this again.",
+            buttons = { { "Run the check now", function() CDM.Check() end } },
+        }
+    end,
+}
+
+function Wizard.Render()
+    local f = Wizard.frame
+    if not f then return end
+    local spec = Wizard.STEPS[Wizard.step](Wizard.C)
+    f.title:SetText(spec.title)
+    f.body:SetText(spec.text)
+    for i, line in ipairs(f.lines) do line:SetText(spec.lines and spec.lines[i] or "") end
+    for i, b in ipairs(f.actions) do
+        local def = spec.buttons and spec.buttons[i]
+        b.onClick = def and def[2] or nil
+        b.text:SetText(def and def[1] or "")
+        b:SetShown(def ~= nil)
+    end
+    f.count:SetText(string.format("Step %d of %d", Wizard.step, #Wizard.STEPS))
+    -- a dot per step along the bottom: gold up to this one, which is the big one
+    for i, dot in ipairs(f.dots) do
+        local size = (i == Wizard.step) and 12 or 8
+        dot:SetSize(size, size)
+        if i <= Wizard.step then dot:SetVertexColor(1, 0.82, 0, 1) else dot:SetVertexColor(0.5, 0.5, 0.5, 0.6) end
+    end
+    f.back:SetShown(Wizard.step > 1)
+    f.next.text:SetText(Wizard.step < #Wizard.STEPS and "Next" or "Finish")
+end
+
+function Wizard.Go(step)
+    if step > #Wizard.STEPS then
+        Wizard.finished = true                                -- (its own sound, not the one for closing)
+        Wizard.frame:Hide()
+        Wizard.Sound("IG_QUEST_LIST_COMPLETE")
+        return
+    end
+    Wizard.step = math.max(1, step)
+    Wizard.Render()
+    Wizard.Sound("IG_QUEST_LIST_SELECT")
+    if Wizard.frame.turn then Wizard.frame.turn:Stop(); Wizard.frame.turn:Play() end   -- the new step fades in
+end
+
+-- The window: returns it, the frame its text sits on, and whether it's the
+-- quest look
+function Wizard.Window()
+    if HasAtlas("QuestBG-Parchment") then
+        local ok, f = pcall(CreateFrame, "Frame", "ProcDocSetupFrame", UIParent, "ButtonFrameTemplate")
+        if ok and f then
+            f:SetSize(372, 500)
+            local title = type(f.TitleContainer) == "table" and f.TitleContainer.TitleText
+            if f.SetTitle then f:SetTitle("ProcDoc Setup") elseif title then title:SetText("ProcDoc Setup") end
+            local portrait = type(f.PortraitContainer) == "table" and f.PortraitContainer.portrait
+            if portrait then portrait:SetTexture(ICON) end
+            if type(f.TitleContainer) == "table" then           -- the title bar drags it too
+                f.TitleContainer:EnableMouse(true)
+                f.TitleContainer:RegisterForDrag("LeftButton")
+                f.TitleContainer:SetScript("OnDragStart", function() f:StartMoving() end)
+                f.TitleContainer:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+            end
+            -- the parchment, where the quest window has it: just inside the inset
+            local page = CreateFrame("Frame", nil, f)
+            local inset = type(f.Inset) == "table" and f.Inset
+            if inset then
+                page:SetPoint("TOPLEFT", inset, "TOPLEFT", 3, -3)
+                page:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", -3, 3)
+                page:SetFrameLevel((inset:GetFrameLevel() or 1) + 1)       -- over the inset's own marble
+                if type(inset.Bg) == "table" then inset.Bg:Hide() end
+            else
+                page:SetPoint("TOPLEFT", 7, -62)
+                page:SetPoint("BOTTOMRIGHT", -9, 29)
+            end
+            local paper = page:CreateTexture(nil, "BACKGROUND")
+            paper:SetAtlas("QuestBG-Parchment")
+            paper:SetAllPoints()
+            f.paper = paper
+            return f, page, true
+        end
+    end
+    local f = CreateFrame("Frame", "ProcDocSetupFrame", UIParent, "BackdropTemplate")
+    f:SetSize(440, 350)
+    f:SetBackdrop(ART.PANEL)                                   -- the classic gold-trimmed dialog
+    local shade = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+    shade:SetColorTexture(0, 0, 0, 0.55)
+    shade:SetPoint("TOPLEFT", 11, -12)
+    shade:SetPoint("BOTTOMRIGHT", -12, 11)
+    local plate = f:CreateTexture(nil, "ARTWORK")
+    plate:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+    plate:SetSize(260, 56)
+    plate:SetPoint("TOP", 0, 12)
+    FS(f, "GameFontNormal", "ProcDoc Setup"):SetPoint("TOP", plate, "TOP", 0, -14)
+    local ok, close = pcall(CreateFrame, "Button", nil, f, "UIPanelCloseButton")
+    if ok and close then
+        close:SetPoint("TOPRIGHT", -5, -5)
+        close:SetScript("OnClick", function() f:Hide() end)
+    end
+    return f, f, false
+end
+
+-- A line of the wizard's text: in the quest look, the quest window's own
+-- font where the game has it, in ink, with no shadow
+function Wizard.Text(parent, fontObject, color)
+    local fs = FS(parent, "GameFontHighlight")
+    local font = fontObject and _G[fontObject]
+    if type(font) == "table" and fs.SetFontObject then fs:SetFontObject(font) end
+    if color then
+        fs:SetTextColor(color[1], color[2], color[3])
+        fs:SetShadowOffset(0, 0)
+    end
+    fs:SetJustifyH("LEFT")
+    return fs
+end
+
+function Wizard.Build()
+    local f, page, quest = Wizard.Window()
+    Wizard.frame, Wizard.quest = f, quest
+    Wizard.C = quest and Wizard.INK.quest or Wizard.INK.dark
+    local C = Wizard.C
+    f:SetFrameStrata("DIALOG")
+    f:SetToplevel(true)
+    f:EnableMouse(true)
+    f:SetMovable(true)
+    f:SetClampedToScreen(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    -- beside the game, on the side the options window isn't: the alerts stay in view
+    local side = (G.menuSide == "RIGHT") and "LEFT" or "RIGHT"
+    local inset = math.floor((UIParent:GetWidth() or 1024) * 0.05)
+    f:SetPoint(side, UIParent, side, side == "LEFT" and inset or -inset, 40)
+    f:Hide()
+    table.insert(UISpecialFrames, "ProcDocSetupFrame")
+
+    -- the step itself, on a frame of its own so a new step can fade in
+    local content = CreateFrame("Frame", nil, page)
+    content:SetAllPoints()
+    local X, TOP, W = 26, -36, 388
+    if quest then X, TOP, W = 18, -16, 320 end
+    f.title = quest and Wizard.Text(content, "QuestTitleFont", C.title) or FS(content, "GameFontNormalLarge")
+    f.title:SetPoint("TOPLEFT", X, TOP)
+    f.title:SetWidth(W)
+    f.title:SetJustifyH("LEFT")
+    local rule = content:CreateTexture(nil, "ARTWORK")          -- the divider under a heading
+    if quest then
+        rule:SetTexture("Interface\\QuestFrame\\UI-HorizontalBreak")
+        rule:SetSize(256, 16)
+        rule:SetPoint("TOPLEFT", f.title, "BOTTOMLEFT", -4, -2)
+    else
+        rule:SetColorTexture(1, 0.82, 0, 0.3)
+        rule:SetSize(W, 1)
+        rule:SetPoint("TOPLEFT", f.title, "BOTTOMLEFT", 0, -6)
+    end
+    f.body = Wizard.Text(content, quest and "QuestFont" or nil, C.text)
+    f.body:SetPoint("TOPLEFT", rule, "BOTTOMLEFT", quest and 4 or 0, quest and -4 or -9)
+    f.body:SetWidth(W)
+    f.body:SetSpacing(2)
+    f.lines = {}
+    local above = f.body
+    for i = 1, 5 do
+        local line = Wizard.Text(content, quest and "QuestFont" or nil, C.text)
+        line:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, i == 1 and -12 or -6)
+        line:SetWidth(W)
+        f.lines[i], above = line, line
+    end
+    f.actions = {}
+    local bw = math.floor((W - 8) / 2)
+    for i = 1, 2 do
+        local b = CreateFlatButton(content, "", bw, 24, function(self)
+            if self.onClick then self.onClick() end
+            Wizard.Render()
+        end)
+        b:SetPoint("BOTTOMLEFT", X + (i - 1) * (bw + 8), quest and 14 or 56)
+        f.actions[i] = b
+    end
+    f.count = quest and Wizard.Text(content, "QuestFontNormalSmall", C.text) or FS(content, "GameFontDisableSmall")
+    if quest then f.count:SetPoint("BOTTOMRIGHT", -14, 46) else f.count:SetPoint("TOPRIGHT", -30, -40) end
+
+    -- along the bottom: Back, a dot per step, Next (the quest window's button bar)
+    f.back = CreateFlatButton(f, "Back", 84, 22, function() Wizard.Go(Wizard.step - 1) end)
+    f.back:SetPoint("BOTTOMLEFT", quest and 6 or 26, quest and 4 or 20)
+    f.next = CreateFlatButton(f, "Next", 84, 22, function() Wizard.Go(Wizard.step + 1) end)
+    f.next:SetPoint("BOTTOMRIGHT", quest and -6 or -26, quest and 4 or 20)
+    f.dots = {}
+    local n = #Wizard.STEPS
+    local row = CreateFrame("Frame", nil, f)                    -- (a frame of their own: over the window's border art)
+    row:SetSize(n * 18, 14)
+    row:SetPoint("BOTTOM", f, "BOTTOM", 0, quest and 8 or 24)
+    row:SetFrameLevel((f:GetFrameLevel() or 1) + 5)
+    for i = 1, n do
+        local dot = row:CreateTexture(nil, "OVERLAY")
+        dot:SetTexture(Pips.TEX)
+        dot:SetPoint("CENTER", row, "CENTER", (i - (n + 1) / 2) * 18, 0)
+        f.dots[i] = dot
+    end
+
+    -- it fades in, and so does each new step
+    local intro = f.CreateAnimationGroup and f:CreateAnimationGroup()
+    if intro then
+        local fade = intro:CreateAnimation("Alpha")
+        fade:SetFromAlpha(0); fade:SetToAlpha(1); fade:SetDuration(0.25); fade:SetSmoothing("OUT")
+    end
+    local turn = content.CreateAnimationGroup and content:CreateAnimationGroup()
+    if turn then
+        local fade = turn:CreateAnimation("Alpha")
+        fade:SetFromAlpha(0); fade:SetToAlpha(1); fade:SetDuration(0.2); fade:SetSmoothing("OUT")
+        f.turn = turn
+    end
+    f:SetScript("OnShow", function()
+        Wizard.finished = nil
+        Wizard.Sound("IG_QUEST_LIST_OPEN")
+        if intro then intro:Play() end
+    end)
+    f:SetScript("OnHide", function()
+        if not Wizard.finished then Wizard.Sound("IG_QUEST_LIST_CLOSE") end
+    end)
+    -- (the status in step 2 changes while the game is still loading its lists)
+    f:SetScript("OnUpdate", function(self, dt)
+        self.since = (self.since or 0) + dt
+        if self.since >= 1 then
+            self.since = 0
+            if self:IsShown() then Wizard.Render() end
+        end
+    end)
+end
+
+function Wizard.Show(step)
+    if not initialized then return end
+    if not Wizard.frame then Wizard.Build() end
+    ProcDocDB.wizardSeen, ProcDocDB.wizardStep = true, nil
+    Wizard.step = math.max(1, math.min(#Wizard.STEPS, tonumber(step) or 1))
+    Wizard.Render()
+    Wizard.frame:Show()
+    Wizard.frame:Raise()
+end
+
+-- The first time ProcDoc runs, and after a reload the wizard asked for (not
+-- in the middle of a fight)
+function Wizard.Auto()
+    if not initialized then return end
+    if ProcDocDB.wizardSeen and not ProcDocDB.wizardStep then return end
+    if InCombatLockdown and InCombatLockdown() then
+        C_Timer.After(5, GuardedHandler(Wizard.Auto))
+        return
+    end
+    Wizard.Show(ProcDocDB.wizardStep or 1)
+end
+
 OpenOptions = function(selectKey)
     if not initialized then return end
     if not optionsFrame then BuildOptionsFrame() end
@@ -6931,6 +7375,8 @@ SlashCmdList["PROCDOC"] = function(msg)
         end
     elseif cmd == "check" then
         CDM.Check()
+    elseif cmd == "setup" or cmd == "wizard" or cmd == "tutorial" then
+        CDM.Wizard.Show(1)
     elseif cmd == "stacktest" then
         local want = (msg or ""):lower():match("^%s*%S+%s+(.-)%s*$")
         local pick
@@ -6990,7 +7436,7 @@ SlashCmdList["PROCDOC"] = function(msg)
         SetMinimapButtonShown(G.minimapHide)
         Print("minimap button " .. (G.minimapHide and "hidden." or "shown."))
     elseif cmd == "help" then
-        Print("commands: |cff00ffff/procdoc|r (options), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [hide | show], check, trace, debug")
+        Print("commands: |cff00ffff/procdoc|r (options), setup (the setup wizard), unlock, lock, test, hide, stacktest [name], minimap, buffs, cdm [hide | show], check, trace, debug")
     else
         ToggleOptions()
     end

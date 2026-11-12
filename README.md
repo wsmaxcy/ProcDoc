@@ -54,6 +54,8 @@ It works out of the box: install it and procs light up. When you want to, every 
 
 ## How to Use
 
+**The first time ProcDoc runs, a short setup wizard opens**, styled like one of the game's quest windows. In five steps it shows you your alerts, checks that Blizzard's Cooldown Manager is set up so your procs show in combat (with a **Reload now** button if a reload would finish it), lets you hide the Cooldown Manager's own icons, points you to your proc list and to arranging your alerts, and tells you what to do if a proc doesn't show. Run it again any time with `/procdoc setup`, or from `/procdoc` > Settings > Setup > **Run the setup wizard**.
+
 1. **Log in** with any class.
 2. **Get a proc.** The alert pulses on screen with a countdown and a sound.
 3. **Customise (optional).** Click the **ProcDoc minimap button**, type **`/procdoc`** (or `/pd`), or open ProcDoc from the game's AddOns settings or the addon compartment menu.
@@ -98,6 +100,7 @@ A slim panel docked near the side of the screen, so your alerts stay visible whi
 | Command | What it does |
 | --- | --- |
 | `/procdoc` | Open / close the options |
+| `/procdoc setup` | Run the setup wizard again |
 | `/procdoc unlock` / `lock` | Show all alerts to arrange / stop |
 | `/procdoc test` / `hide` | Preview every enabled alert for 30s / hide previews |
 | `/procdoc stacktest [name]` | Play a pretend stacking buff (1 to 5 stacks, down to 3) through a proc's alert to check its stack dots |
