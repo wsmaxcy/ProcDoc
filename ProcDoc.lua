@@ -31,6 +31,7 @@ local DEFAULTS = {
     timerLowThreshold   = 3,
     timerDecimals       = true,
     disableTimers       = false,
+    fadeTimers          = false,   -- a line sweeps over the art as a proc's time runs out, dimming what it passes (instead of or as well as the number)
     isMuted             = false,
     defaultSound        = "alert1",
     soundChannel        = "Master",
@@ -240,16 +241,17 @@ end
 -- Returns exists, name, icon, count, duration, expirationTime, spellId, auraInstanceID.
 -- `exists` is separate so the scan keeps going past auras whose fields are secret.
 -- Returns nil, true when the client refused access (restricted).
-local function GetPlayerBuff(i)
+local function GetPlayerBuff(i, harmful)
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
-        local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+        local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, harmful and "HARMFUL" or "HELPFUL")
         if not ok then return nil, true end
         if issecret(a) then return true end   -- exists, but nothing readable
         if not a then return nil end
         return true, a.name, a.icon, a.applications, a.duration, a.expirationTime, a.spellId, a.auraInstanceID
     end
-    if _G.UnitBuff then
-        local name, icon, count, _, duration, expirationTime, _, _, _, spellId = _G.UnitBuff("player", i)
+    local list = harmful and _G.UnitDebuff or _G.UnitBuff
+    if list then
+        local name, icon, count, _, duration, expirationTime, _, _, _, spellId = list("player", i)
         if name == nil then return nil end
         return true, name, icon, count, duration, expirationTime, spellId
     end
@@ -264,14 +266,22 @@ local function IsSpellUsableCompat(spell)
     end
 end
 
+-- start, duration, and whether a cooldown is running at all. In combat Forever
+-- hides the first two, but its API notes list `isActive` (and `isOnGCD`) as never
+-- secret: so even then ProcDoc can tell "on cooldown" from "ready".
 local function GetSpellCooldownCompat(spell)
     if C_Spell and C_Spell.GetSpellCooldown then
         local cd = Clean(SafeCall(C_Spell.GetSpellCooldown, spell))
-        if type(cd) == "table" then return cd.startTime, cd.duration end
+        if type(cd) == "table" then
+            local active = Clean(cd.isActive)
+            if type(active) ~= "boolean" then active = nil end         -- (not "cond and v or nil": v can be false)
+            return cd.startTime, cd.duration, active
+        end
         return nil
     end
     if _G.GetSpellCooldown then
-        return SafeCall(_G.GetSpellCooldown, spell)
+        local start, duration = SafeCall(_G.GetSpellCooldown, spell)
+        return start, duration
     end
 end
 
@@ -369,6 +379,7 @@ local PROC_DATA = {
             buffName         = "Decimation",      -- empowers Soul Fire
             spellIDs         = { 440873 },
             cdmIDs           = { 440870 },
+            cdmBlind         = true,             -- (the game's data ties that row to the talent, not to this buff)
             baseDuration     = 10,
             alertTexturePath = IMG .. "DemonEmberBand.tga",
             alertStyle       = "TOP",              -- (a 10 sec window: Soul Fire doesn't use it up)
@@ -411,6 +422,8 @@ local PROC_DATA = {
             charges          = 4,
             dotSlots         = 4,
             gainedBy         = { ["Arcane Blast"] = 1 },   -- (the game hides the count in combat: your casts are counted)
+            noMirror         = true,             -- (its aura is flagged as a debuff: the game can't draw it, section 9b)
+            selfDebuff       = true,             -- ...and the buff scan looks in your debuffs for it (CheckProcs)
         },
         {
             buffName         = "Fingers of Frost",
@@ -493,6 +506,7 @@ local PROC_DATA = {
             buffName         = "Flurry",
             spellIDs         = { 16257 },
             cdmIDs           = { 16256 },
+            cdmBlind         = true,             -- (the game's data ties that row to the talent, not to this buff)
             baseDuration     = 15,
             texture          = "Interface\\Icons\\Ability_GhoulFrenzy",
             alertTexturePath = IMG .. "BlueLightningStreak.tga",
@@ -699,28 +713,28 @@ local IMAGE_LIST = {
     { "GreenGlowArch", 256, 128 },        { "GreenMist", 128, 256 },
     { "GreenVines", 128, 256 },           { "HolyFlameArc", 256, 128 },
     { "IceWallArc", 128, 256 },           { "IcyBlueArc", 128, 256 },
-    { "JadeMist", 128, 256 },             { "JadeSwirlCrescent", 128, 256 },
-    { "LightningStage1", 256, 128 },      { "LightningStage2", 256, 128 },
-    { "LightningStage3", 256, 128 },      { "LightningStage4", 256, 128 },
-    { "LightningWings", 256, 128 },       { "OrangeStreakArc", 128, 256 },
-    { "PaleGoldBlade", 128, 256 },        { "PinkRuneArc", 128, 256 },
-    { "PurpleComet", 256, 128 },          { "PurpleFlameBand", 256, 128 },
-    { "PurpleThornBand", 256, 128 },      { "RadiantFeathers", 256, 128 },
-    { "RedBoltSlash", 256, 128 },         { "RedFlameCrescent", 128, 256 },
-    { "RedShield", 128, 256 },            { "RedSlash", 256, 128 },
-    { "RunePlate", 256, 128 },            { "ShadowNova", 256, 128 },
-    { "ShadowStar", 128, 256 },           { "ShadowWisps", 128, 256 },
-    { "SilverEmblem", 128, 128 },         { "SilverWispArc", 128, 256 },
-    { "SmallRedSlash", 128, 256 },        { "StarfallCrescent", 128, 256 },
-    { "StormArc", 256, 128 },             { "StormStones", 256, 128 },
-    { "StormVortexArc", 256, 128 },       { "SunOrb", 128, 128 },
-    { "TidalArc", 256, 128 },             { "VenomDrip", 128, 256 },
-    { "VioletSwirls", 128, 256 },         { "VoidCrescent", 128, 256 },
-    { "WhiteArch", 256, 128 },            { "WhiteArcSoft", 128, 256 },
-    { "WhiteCrescent", 128, 256 },        { "WhiteDoubleArch", 256, 128 },
-    { "WhiteDoubleCrescent", 128, 256 },  { "WhiteFlareArc", 128, 256 },
-    { "WhiteRuneArc", 128, 256 },         { "WhiteSparkArc", 128, 256 },
-    { "WhiteStarburst", 256, 128 },
+    { "Invisible", 128, 256 },            { "JadeMist", 128, 256 },
+    { "JadeSwirlCrescent", 128, 256 },    { "LightningStage1", 256, 128 },
+    { "LightningStage2", 256, 128 },      { "LightningStage3", 256, 128 },
+    { "LightningStage4", 256, 128 },      { "LightningWings", 256, 128 },
+    { "OrangeStreakArc", 128, 256 },      { "PaleGoldBlade", 128, 256 },
+    { "PinkRuneArc", 128, 256 },          { "PurpleComet", 256, 128 },
+    { "PurpleFlameBand", 256, 128 },      { "PurpleThornBand", 256, 128 },
+    { "RadiantFeathers", 256, 128 },      { "RedBoltSlash", 256, 128 },
+    { "RedFlameCrescent", 128, 256 },     { "RedShield", 128, 256 },
+    { "RedSlash", 256, 128 },             { "RunePlate", 256, 128 },
+    { "ShadowNova", 256, 128 },           { "ShadowStar", 128, 256 },
+    { "ShadowWisps", 128, 256 },          { "SilverEmblem", 128, 128 },
+    { "SilverWispArc", 128, 256 },        { "SmallRedSlash", 128, 256 },
+    { "StarfallCrescent", 128, 256 },     { "StormArc", 256, 128 },
+    { "StormStones", 256, 128 },          { "StormVortexArc", 256, 128 },
+    { "SunOrb", 128, 128 },               { "TidalArc", 256, 128 },
+    { "VenomDrip", 128, 256 },            { "VioletSwirls", 128, 256 },
+    { "VoidCrescent", 128, 256 },         { "WhiteArch", 256, 128 },
+    { "WhiteArcSoft", 128, 256 },         { "WhiteCrescent", 128, 256 },
+    { "WhiteDoubleArch", 256, 128 },      { "WhiteDoubleCrescent", 128, 256 },
+    { "WhiteFlareArc", 128, 256 },        { "WhiteRuneArc", 128, 256 },
+    { "WhiteSparkArc", 128, 256 },        { "WhiteStarburst", 256, 128 },
 }
 local IMAGE_SIZE = {}
 for _, e in ipairs(IMAGE_LIST) do
@@ -870,7 +884,9 @@ end
 -- on; for a reminder, while nothing says the buff is there
 function Remind.WantLive(a)
     if not IsProcEnabled(a.proc) then return false end
-    if PS(a.proc.key).combatOnly and not Remind.InCombat() then return false end   -- "Only in combat"
+    local ps = PS(a.proc.key)
+    if ps.combatOnly and not Remind.InCombat() then return false end   -- "Only in combat"
+    if ps.oocOnly and Remind.InCombat() then return false end          -- "Only out of combat"
     local any = next(a.sources) ~= nil
     if not Remind.Is(a.proc) then return any end
     return (not any) and Remind.ConditionOK()
@@ -903,7 +919,9 @@ local function ResolveImage(proc)
 end
 
 -- Sets tex coords for a clockwise rotation (0/90/180/270) followed by an
--- optional on-screen horizontal mirror.
+-- optional on-screen horizontal mirror. Returns the four corners it used
+-- (upper left, lower left, upper right, lower right of what's on screen),
+-- which the fade (Pips.DrawArt) cuts the picture from.
 local function ApplyTexCoord(tex, flip, isIcon, rotation)
     local l, r, t, b = 0, 1, 0, 1
     if isIcon then l, r, t, b = 0.08, 0.92, 0.08, 0.92 end
@@ -916,6 +934,7 @@ local function ApplyTexCoord(tex, flip, isIcon, rotation)
         LL, LR = LR, LL
     end
     tex:SetTexCoord(UL[1], UL[2], LL[1], LL[2], UR[1], UR[2], LR[1], LR[2])
+    return UL, LL, UR, LR
 end
 
 local ROTATION_OPTIONS = {
@@ -1037,6 +1056,21 @@ end
 -- the rest up to "Number of dots" or the most seen). Grouped in one table to
 -- spare main-chunk locals.
 local Pips = { TEX = "Interface\\AddOns\\ProcDoc\\ProcDoc_Pip" }   -- tools/make_icon.py
+
+-- Buff alerts the game draws itself while it hides your buffs (section 9b).
+-- Declared here: showing an alert first asks whether the game has it.
+local Mirror = { sets = {}, touch = {}, dirty = true }
+function Mirror.Owns(proc)
+    local set = Mirror.sets[proc.key]
+    return set ~= nil and set.on == true
+end
+-- `cdmBlind`: the Cooldown Manager lists the proc, but the game's own data
+-- (CooldownSetLinkedSpell) ties that row to the talent and not to the buff
+-- (Flurry, Decimation), so its icon can't be trusted to light with the buff.
+-- When the game can draw the proc itself, that is used and the icon ignored.
+function Mirror.Prefers(proc)
+    return (proc.cdmBlind and Mirror.Covers ~= nil and Mirror.Covers(proc)) and true or false
+end
 
 function Pips.Enabled(proc)
     return not proc.isAction and not Remind.Is(proc) and PS(proc.key).stackDots ~= false
@@ -1246,6 +1280,11 @@ local function CreatePiece(a, index)
     p.tex = p:CreateTexture(nil, "ARTWORK")
     p.tex:SetPoint("CENTER")
 
+    -- The fade (Pips.DrawArt) shares the art between two textures that meet at
+    -- its line: `tex` has the part the line hasn't reached, `dim` the part it has
+    p.dim = p:CreateTexture(nil, "ARTWORK")
+    p.dim:Hide()
+
     -- Additive copy of the art used for the pop-in flash
     p.flash = p:CreateTexture(nil, "OVERLAY")
     p.flash:SetPoint("CENTER")
@@ -1434,8 +1473,10 @@ LayoutAlert = function(a)
         p:SetPoint("CENTER", ProcDoc, "CENTER", px, y)
         p.baseW, p.baseH = dw * pixelScale, dh * pixelScale
         p:SetSize(p.baseW, p.baseH)
+        Pips.Unsplit(p)                           -- (a fade in progress starts over from the whole picture)
         p.tex:SetTexture(img)
-        ApplyTexCoord(p.tex, flip, isIcon, rot)
+        p.dim:SetTexture(img)
+        p.uv = { ApplyTexCoord(p.tex, flip, isIcon, rot) }    -- (the corners the fade cuts the picture from)
         p.flash:SetTexture(img)
         ApplyTexCoord(p.flash, flip, isIcon, rot)
         a.baseImage, a.curImage = img, img        -- (per-stack art swaps from here; section 5)
@@ -1458,7 +1499,9 @@ LayoutAlert = function(a)
         a.pieces[i]:Hide()
     end
     a.numPieces = count
+    a.lastFade = nil
     if proc.capImage or a.cap then Pips.CapLayout(a, s, x, y, both, pixelScale) end
+    Mirror.touch[proc.key] = true                     -- (the game's copy follows: section 9b)
 end
 
 local function GetAlert(proc)
@@ -1484,7 +1527,8 @@ end
 -- unless it's turned off; the alert counts as shown until that finishes, and
 -- coming back mid-shrink simply cancels it.
 local function RefreshAlert(a)
-    local want = a.test or a.live or (unlockMode and IsProcEnabled(a.proc))
+    -- (in combat the game may be drawing this one itself: section 9b)
+    local want = a.test or (a.live and not Mirror.Owns(a.proc)) or (unlockMode and IsProcEnabled(a.proc))
     if want then
         if not a.shown then a.phase = 0 end
         a.exitStart = nil
@@ -1527,6 +1571,7 @@ local function RefreshAlert(a)
 end
 
 local function RefreshAllAlerts()
+    Mirror.dirty = true
     for _, a in pairs(alerts) do
         if a.shown or a.test or a.live then RefreshAlert(a) end
     end
@@ -1576,11 +1621,12 @@ function Remind.UpdateLive(a, why)
     end
 end
 
--- Combat started or ended: "Only in combat" alerts show or hide (popping in
+-- Combat started or ended: "Only in combat" and "Only out of combat" alerts show or hide (popping in
 -- with their sound like any proc)
 function Remind.CombatChanged()
     for _, a in pairs(alerts) do
-        if PS(a.proc.key).combatOnly then Remind.UpdateLive(a, "combat") end
+        local ps = PS(a.proc.key)
+        if ps.combatOnly or ps.oocOnly then Remind.UpdateLive(a, "combat") end
     end
 end
 
@@ -1599,6 +1645,8 @@ end
 
 -- Re-evaluates enabled state for every alert (after toggles in the options)
 local function ReevaluateAll()
+    Mirror.dirty = true
+    if Remind.InCombat() and Mirror.Combat then Mirror.Combat(true) end   -- (one just switched off goes now)
     for _, a in pairs(alerts) do
         a.live = Remind.WantLive(a)
         RefreshAlert(a)
@@ -1606,12 +1654,93 @@ local function ReevaluateAll()
     if Remind.RefreshAll then Remind.RefreshAll() end
 end
 
+-- How a proc shows the time it has left: the number counting down (TimerEnabled)
+-- and/or the fade, a line sweeping over the art (Pips.Fade, drawn by
+-- Pips.DrawArt). Settings > Timers sets the default for both; a proc's own
+-- "Show time left as" overrides it ("on" = the number, "fade", "both",
+-- "off" = neither).
 local function TimerEnabled(proc)
     if Remind.Is(proc) then return false end     -- nothing to count down
     local t = PS(proc.key).timer
-    if t == "on" then return true end
-    if t == "off" then return false end
+    if t == "on" or t == "both" then return true end
+    if t == "off" or t == "fade" then return false end
     return not G.disableTimers
+end
+
+function Pips.Fade(proc)
+    if Remind.Is(proc) then return false end
+    local t = PS(proc.key).timer
+    if t == "fade" or t == "both" then return true end
+    if t == "on" or t == "off" then return false end
+    return G.fadeTimers == true
+end
+
+-- The fade. A hard line sweeps over the art as the time runs out, from the top
+-- down (side to side when the art is wider than it is tall), and the part it has
+-- passed shows at FADE_TO of the opacity the alert is set to. The art is drawn
+-- in two textures that meet at the line: `dim` has the part passed, `tex` the
+-- rest, and each shows its own part of the picture (cut from the corners that
+-- ApplyTexCoord returned, so rotation and mirror need no special care).
+-- `f` is how far the line has got, 0 to 1 (nil: no fade); W x H is the art's
+-- size now, centred in its piece.
+Pips.FADE_TO = 0.5
+
+function Pips.Corner(uv, u, v)        -- u: left to right, v: top to bottom, both 0 to 1 over the art as it looks on screen
+    local UL, LL, UR = uv[1], uv[2], uv[3]
+    return UL[1] + u * (UR[1] - UL[1]) + v * (LL[1] - UL[1]),
+           UL[2] + u * (UR[2] - UL[2]) + v * (LL[2] - UL[2])
+end
+
+function Pips.CutPart(tex, uv, u0, v0, u1, v1)
+    local ax, ay = Pips.Corner(uv, u0, v0)
+    local bx, by = Pips.Corner(uv, u0, v1)
+    local cx, cy = Pips.Corner(uv, u1, v0)
+    local dx, dy = Pips.Corner(uv, u1, v1)
+    tex:SetTexCoord(ax, ay, bx, by, cx, cy, dx, dy)
+end
+
+-- Back to the whole picture in one texture
+function Pips.Unsplit(p)
+    if not p.split then return end
+    p.split = nil
+    p.dim:Hide()
+    p.tex:ClearAllPoints()
+    p.tex:SetPoint("CENTER")
+    local uv = p.uv
+    if uv then
+        p.tex:SetTexCoord(uv[1][1], uv[1][2], uv[2][1], uv[2][2], uv[3][1], uv[3][2], uv[4][1], uv[4][2])
+    end
+end
+
+function Pips.DrawArt(p, W, H, alpha, f)
+    if not (f and p.uv) or f <= 0.002 or f >= 0.998 then
+        Pips.Unsplit(p)                          -- (not started yet: the whole of it; run out: the whole of it, dimmed)
+        p.tex:SetAlpha((f and f >= 0.998) and alpha * Pips.FADE_TO or alpha)
+        p.tex:SetSize(W, H)
+        return
+    end
+    p.split = true
+    local dim, tex, uv = p.dim, p.tex, p.uv
+    dim:ClearAllPoints()
+    tex:ClearAllPoints()
+    if p.baseW > p.baseH then                    -- wide: the line goes from left to right
+        dim:SetPoint("LEFT", p, "CENTER", -W / 2, 0)
+        tex:SetPoint("RIGHT", p, "CENTER", W / 2, 0)
+        dim:SetSize(W * f, H)
+        tex:SetSize(W * (1 - f), H)
+        Pips.CutPart(dim, uv, 0, 0, f, 1)
+        Pips.CutPart(tex, uv, f, 0, 1, 1)
+    else                                         -- tall: from the top down
+        dim:SetPoint("TOP", p, "CENTER", 0, H / 2)
+        tex:SetPoint("BOTTOM", p, "CENTER", 0, -H / 2)
+        dim:SetSize(W, H * f)
+        tex:SetSize(W, H * (1 - f))
+        Pips.CutPart(dim, uv, 0, 0, 1, f)
+        Pips.CutPart(tex, uv, 0, f, 1, 1)
+    end
+    dim:SetAlpha(alpha * Pips.FADE_TO)
+    tex:SetAlpha(alpha)
+    dim:Show()
 end
 
 -- 5) OnUpdate pulse logic (frame-rate independent sine pulse + countdown text)
@@ -1664,8 +1793,7 @@ local function AnimateExit(a, now)
     local flashA = math.max(0, 1 - t / 0.6) * 0.7 * (PS(a.proc.key).alpha or 1)
     for i = 1, a.numPieces do
         local p = a.pieces[i]
-        p.tex:SetAlpha(alpha)
-        p.tex:SetSize(p.baseW * size, p.baseH * size)
+        Pips.DrawArt(p, p.baseW * size, p.baseH * size, alpha, a.lastFade)    -- (the fade's line stays where it got to)
         if flashA > 0.01 then
             p.flash:SetAlpha(flashA)
             p.flash:SetSize(p.baseW * size * 1.1, p.baseH * size * 1.1)
@@ -1708,16 +1836,23 @@ local function OnUpdateHandler(self, elapsed)
             local alpha = (minA + (maxA - minA) * frac) * (s.alpha or 1)
             local pulse = minS + (maxS - minS) * frac
 
-            local remaining
+            local remaining, total
             if a.live and a.expiration then
                 remaining = a.expiration - now
+                total = a.duration or a.proc.lastDuration or a.proc.baseDuration
                 if remaining < -0.5 then remaining = nil end   -- (re-procced mid-fight: time unknown)
             elseif a.test then
                 local d = a.testDuration or 10
-                remaining = d - ((now - (a.testStart or now)) % d)
+                remaining, total = d - ((now - (a.testStart or now)) % d), d
             elseif unlockMode then
                 local d = SampleDuration(a.proc)
-                remaining = d - ((now - unlockStart) % d)
+                remaining, total = d - ((now - unlockStart) % d), d
+            end
+            -- Fade: how far its line has got over the art (0 at the start, 1 when
+            -- the time is out; see Pips.DrawArt). Nothing when its length isn't known.
+            local wipe
+            if remaining and total and total > 0 and Pips.Fade(a.proc) then
+                wipe = 1 - math.min(math.max(remaining, 0), total) / total
             end
             local text, r, g, b
             if remaining and TimerEnabled(a.proc) then
@@ -1747,7 +1882,7 @@ local function OnUpdateHandler(self, elapsed)
                 end
             end
 
-            a.lastAlpha, a.lastSize = alpha * popAlpha, pulse * pop
+            a.lastAlpha, a.lastSize, a.lastFade = alpha * popAlpha, pulse * pop, wipe
 
             -- Stacks: live count from the buff, or a counting sample in previews
             local stacks, slots
@@ -1792,6 +1927,7 @@ local function OnUpdateHandler(self, elapsed)
                 if want and want ~= a.curImage then
                     for i = 1, a.numPieces do
                         a.pieces[i].tex:SetTexture(want)
+                        a.pieces[i].dim:SetTexture(want)
                         a.pieces[i].flash:SetTexture(want)
                     end
                     a.curImage = want
@@ -1819,8 +1955,7 @@ local function OnUpdateHandler(self, elapsed)
             for i = 1, a.numPieces do
                 local p = a.pieces[i]
                 local away = oneSide and i == 2
-                p.tex:SetAlpha(away and 0 or alpha * popAlpha)
-                p.tex:SetSize(p.baseW * pulse * pop, p.baseH * pulse * pop)
+                Pips.DrawArt(p, p.baseW * pulse * pop, p.baseH * pulse * pop, away and 0 or alpha * popAlpha, (not away) and wipe or nil)
                 if away then
                     p.flash:Hide()
                 elseif flashA > 0.01 then
@@ -1904,6 +2039,52 @@ function Predict.Entry(id)
     end
 end
 
+-- Abilities of one class that share a cooldown: { seconds, spell numbers }.
+-- Only what is certain is listed: the three shocks (Forever's data says one
+-- 6 sec cooldown for all of them, and a player saw it). The data lists other
+-- groups too (the traps, Revenge/Overpower...: dev/tests/make_shared_groups.py),
+-- but a wrong entry would hide an alert that should show, so they wait until
+-- they're confirmed in game. Without an entry the cooldown flag below still
+-- catches a shared cooldown, a moment later.
+Predict.SHARED = {
+    { 6, 8042, 8050, 8056 },                   -- Shaman: Earth, Flame and Frost Shock
+}
+Predict.castAt, Predict.lastCast = {}, -1000      -- spell name -> when you last cast it; any cast
+-- A cooldown with no cast of ours behind it has to read "active" this long (sec) before it counts: while a cast is
+-- being sent the game says "active", "not", "active" at every poll though nothing has started, and the alert flashed
+-- off and on (4 bursts in 49 minutes of a real Rogue's play). A shared cooldown the table above lacks is told by
+-- the flag too, this much later.
+Predict.FLAG_HOLD = 0.3
+
+-- The group a spell (by its name in this game) belongs to: { seconds, names }
+function Predict.GroupOf(name)
+    if not Predict.byName then
+        local byName, complete = {}, true
+        for _, g in ipairs(Predict.SHARED) do
+            local group = { sec = g[1], names = {} }
+            for i = 2, #g do
+                local n = GetSpellNameCompat(g[i])
+                if n then group.names[#group.names + 1] = n; byName[n] = group else complete = false end
+            end
+        end
+        if not complete then return name and byName[name] or nil end      -- (the game isn't ready: ask again next time)
+        Predict.byName = byName
+    end
+    return name and Predict.byName[name] or nil
+end
+
+-- When a spell you didn't cast is still on a cooldown another of its group started
+function Predict.SharedEnds(name, now)
+    local g = Predict.GroupOf(name)
+    if not g then return nil end
+    local ends
+    for _, other in ipairs(g.names) do
+        local t = other ~= name and Predict.castAt[other]
+        if t and now < t + g.sec then ends = math.max(ends or 0, t + g.sec) end
+    end
+    return ends, g.sec
+end
+
 local function RegisterProc(proc, isAction)
     proc.key = proc.key or proc.buffName
     proc.isAction = isAction or nil
@@ -1944,6 +2125,7 @@ local function RegisterProc(proc, isAction)
         proc.consumeSet = type(proc.consumedBy) == "table" and NameSet(proc.consumedBy, true) or nil
         proc.spareSet   = proc.sparedBy and NameSet(proc.sparedBy, true) or nil
         proc.gainSet    = proc.gainedBy and NameSet(proc.gainedBy) or nil
+        Mirror.dirty = true
         for _, id in ipairs(proc.spellIDs or {}) do
             buffBySpellID[id] = proc
             if not proc.auto then
@@ -2260,6 +2442,7 @@ local function LearnProcID(proc, id)
     byClass[proc.key][id] = true
     proc.learnedIDs = byClass[proc.key]
     if not buffBySpellID[id] then buffBySpellID[id] = proc end
+    Mirror.dirty = true                               -- (the game's copy looks for this number too)
     Trace("learned spell ID %d for %s", id, proc.key)
 end
 
@@ -2377,6 +2560,30 @@ CheckProcs = function()
                     if Readable(icon) then proc.seenIcon = icon end
                 end
                 LearnProcID(proc, spellId)
+            end
+        end
+    end
+    -- A buff the game counts as a debuff on you (Arcane Blast: its aura is flagged
+    -- that way in the game's data) is never in the helpful list: look in the
+    -- harmful one, so its real stacks and time left are known out of combat, and
+    -- a fight ending doesn't make it look gone while it's still on you.
+    for _, proc in ipairs(buffProcs) do
+        if proc.selfDebuff and not found[proc.key] and IsProcEnabled(proc) then
+            for i = 1, 40 do
+                local exists, name, icon, count, duration, expirationTime, spellId, instanceID = GetPlayerBuff(i, true)
+                if not exists then break end
+                if Readable(name) or Readable(spellId) then
+                    local match
+                    if Readable(spellId) then match = buffBySpellID[spellId] end
+                    if not match and Readable(name) then match = buffByName[name] end
+                    if match == proc then
+                        Predict.MarkSeen(proc)
+                        found[proc.key] = MakeAuraInfo(proc, count, duration, expirationTime, instanceID, now)
+                        LearnProcID(proc, spellId)
+                        readable = readable + 1
+                        break
+                    end
+                end
             end
         end
     end
@@ -2562,6 +2769,15 @@ function Predict.Gain(castName)
                 Trace("%s %s by your %s", proc.key, gain and "gained charges" or "renewed", castName)
             elseif gain then
                 proc.gainAt, proc.gainN = now, gain
+                -- A `fixedTime` buff your own cast always gives (Arcane Blast)
+                -- needs no one to see it: the cast says it's up, and for how
+                -- long. Unless a Cooldown Manager icon is watching it.
+                local dur = proc.lastDuration or proc.baseDuration
+                if hidden and proc.fixedTime and dur and not (Predict.IsWatched and Predict.IsWatched(proc)) then
+                    local n = math.min(proc.charges or gain, gain)
+                    SetLive(proc, "aura", { exp = now + dur, dur = dur, charges = n, stacks = n })   -- (stacks: so its dots show too)
+                    Trace("%s is up: your %s gives it (%d sec from this cast)", proc.key, castName, dur)
+                end
             end
         end
     end
@@ -2806,22 +3022,82 @@ local IconState  -- forward (section 9): what the ability's Cooldown Manager ico
 -- cooldown; no times, and right after a cast it can still say "ready" for a
 -- moment, so it's the last resort).
 -- A count can't know about a cooldown that's reset early (Improved
--- Stormstrike: a dodge or parry can reset Stormstrike). The icon does: once
--- it has shown this cooldown running, its saying "back" ends the count.
+-- Stormstrike: a dodge or parry can reset Stormstrike), or one that another
+-- spell started (the shocks share theirs). Two things can: whether a cooldown
+-- is running at all (`isActive`, never secret, even in combat), and the
+-- shared-cooldown table above. The flag has one trap: the global cooldown
+-- makes EVERY spell say "active" for a moment after ANY cast. So:
+--   * "active" counts as a cooldown only outside that moment (1.6 sec after any
+--     cast); inside it, the count from your own cast decides, as it always did
+--     (4.19 development once said "ready" there, and every ability cast during
+--     another one's cooldown made its alert pop back up: never again)
+--   * "not active" ends a cooldown we are counting only once the flag has been
+--     seen right during one of this spell's cooldowns (so a flag that doesn't
+--     work in combat changes nothing) and has stayed that way a moment
+--   * "active" with no cast of ours behind it (our count says nothing is
+--     running) counts only once it has stayed on for Predict.FLAG_HOLD: while
+--     a cast is being sent the game flips the flag at every poll, with no
+--     cooldown started, and the alert would flash off and on
 local function SpellOnCooldown(proc, st, now)
-    local start, duration = GetSpellCooldownCompat(proc.localName)
+    local start, duration, active = GetSpellCooldownCompat(proc.localName)
     if Readable(start) and Readable(duration) and start and duration then
         local left = (start > 0 and duration > 1.5) and (start + duration - now) or 0
         if left > 0.1 then
             proc.cdLength = duration
             return true, "cooldown", start + duration, duration
         end
+        -- The game says it's ready: nothing is left to count. (A cooldown reset
+        -- out of combat would otherwise count on, and hide the alert again the
+        -- moment the next fight made the game's numbers secret.)
+        if st.lastCast and now - st.lastCast > 0.5 then st.lastCast, st.iconOn = nil, nil end
+        st.readyAt = now
         return false, "cooldown"
     end
+    local sharedEnd, sharedLen = Predict.SharedEnds(proc.localName, now)
+    if sharedEnd then return true, "shared cooldown", sharedEnd, sharedLen end
+    -- how long its cooldown is: as last read, else the game's base number
     local len = proc.cdLength
     if not len then
         local base = Clean(SafeCall(_G.GetSpellBaseCooldown, proc.spellID or proc.localName))
         len = (type(base) == "number" and base > 1500) and base / 1000 or nil
+    end
+    local counted = (len and st.lastCast and now < st.lastCast + len) and true or false   -- our count: still running
+    if active ~= nil then
+        local gcd = (now - Predict.lastCast) < 1.6
+        if active == true then
+            st.offSince = nil
+            if not gcd then
+                -- A cooldown is really running. Not at its very end though (by our count, or the moment the game
+                -- said it was ready): a flag a poll behind says "active" then, and the spell is in fact ready.
+                local atEnd = (len and st.lastCast and math.abs(now - (st.lastCast + len)) <= 0.3)
+                    or (st.readyAt and now - st.readyAt < 0.5 and not counted)
+                if atEnd then
+                    st.flagSince = nil
+                elseif counted then
+                    st.flagOn, st.flagWorks, st.flagSince = true, true, nil    -- (our count agrees: it's real, and the flag works here)
+                else
+                    -- no cast of ours behind it: only once it has stayed on for a moment (see Predict.FLAG_HOLD)
+                    st.flagSince = st.flagSince or now
+                    if now - st.flagSince >= Predict.FLAG_HOLD then st.flagOn = true end
+                end
+            end
+            -- (in the global cooldown: a cooldown the flag showed before still counts; else the count decides)
+            if st.flagOn and (not gcd or counted or not (len and st.lastCast)) then
+                local ends = (st.lastCast and len) and (st.lastCast + len) or nil
+                if ends and ends <= now then ends = nil end        -- (longer than we counted: no made-up end)
+                return true, "cooldown flag", ends, ends and len or nil
+            end
+        else
+            st.flagOn, st.flagSince = nil, nil
+            st.offSince = st.offSince or now
+            if not counted then return false, "cooldown flag" end
+            if st.flagWorks and now - st.lastCast > 0.6 and now - st.offSince >= 0.3 then
+                Trace("%s is back early: its cooldown was reset", proc.key)
+                st.lastCast, st.iconOn = nil, nil                  -- (nothing left to count)
+                return false, "cooldown flag"
+            end
+            -- (the count says it's still running, and the flag hasn't proved itself yet, or only just changed: the count stands)
+        end
     end
     if len and st.lastCast then
         local ends = st.lastCast + len
@@ -2929,8 +3205,12 @@ local function CheckActionProc(proc)
     if G.trace then
         local state = (ready and "ready" or "not ready") .. " (" .. tostring(how) .. ")"
         if st.lastState ~= state then
-            st.lastState = state
-            Trace("%s %s", proc.key, state)
+            -- (a moment short of energy and back, over and over, would fill the
+            -- log: each such state is said the first time, then only real changes)
+            local plain = state:gsub(", short of power", "")
+            st.said = st.said or {}
+            if plain ~= st.lastPlain or not st.said[state] then Trace("%s %s", proc.key, state) end
+            st.lastState, st.lastPlain, st.said[state] = state, plain, true
         end
     end
     if ready then
@@ -3128,6 +3408,8 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
         if isPlayer then
             local castName = Readable(arg3) and GetSpellNameCompat(arg3) or nil
             Trace("cast %s", castName or "<secret spell>")
+            Predict.lastCast = GetTime()
+            if castName then Predict.castAt[castName] = Predict.lastCast end
             if ConsumeBuffProcs(castName) then
                 C_Timer.After(0.3, GuardedHandler(function() ResolvePendingConsumes(true) end))
             end
@@ -3174,6 +3456,8 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
     elseif event == "PLAYER_REGEN_DISABLED" then
         Trace("entered combat")
         Remind.inCombat = true
+        Mirror.Combat(true)                    -- buffs are hidden now: the game draws those it can
+        for _, st in pairs(actionState) do st.flagOn, st.offSince, st.flagSince = nil, nil, nil end    -- (the cooldown flag is read afresh)
         Remind.CombatChanged()                 -- "Only in combat" alerts can show now
         CheckAllActionProcs()
     elseif event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
@@ -3182,9 +3466,13 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
         -- Aura data unlocks after combat: resync everything
         Trace("left combat")
         Remind.inCombat = false
-        Remind.CombatChanged()
+        Mirror.Combat(false)                   -- buffs are readable again: ProcDoc's own alerts take over
+        for _, st in pairs(actionState) do st.flagOn, st.offSince, st.flagSince = nil, nil, nil end
         CheckProcs()
         CheckAllActionProcs()
+        -- (after the re-check, so an "Only out of combat" alert comes back only if its buff is really still there,
+        -- not for a moment because of what ProcDoc last believed in the fight)
+        Remind.CombatChanged()
     else
         CheckAllActionProcs()
     end
@@ -3496,8 +3784,9 @@ function CDM.WatchActions()
                 local proc = CDM.ActionFor(CDM.CooldownID(f), f)
                 if proc and IsProcEnabled(proc) then      -- (ticked ones only: the rest would fill the log)
                     local state = CDM.ActionState(f)
-                    if CDM.actState[proc.key] ~= state then
-                        CDM.actState[proc.key] = state
+                    local plain = state:gsub(" tint=.*", "")     -- (its tint changes with every bit of energy spent)
+                    if CDM.actState[proc.key] ~= plain then
+                        CDM.actState[proc.key] = plain
                         Trace("%s icon on the Cooldown Manager: %s", proc.key, state)
                     end
                 end
@@ -3538,7 +3827,7 @@ function CDM.Poll()
     local want, how, gone, stacks = {}, {}, {}, {}
     local function Read(f)
         local proc = CDM.ProcFor(CDM.CooldownID(f), f)
-        if proc and IsProcEnabled(proc) then
+        if proc and IsProcEnabled(proc) and not Mirror.Prefers(proc) then
             local active, why = CDM.Active(f)
             if active then
                 want[proc.key], how[proc.key] = proc, why
@@ -3705,7 +3994,9 @@ function CDM.Wanted()
             cid = Clean(cid)
             local p = cid and CDM.ProcFor(cid)
             if p then listed[p.key] = true end
-            local info = p and IsProcEnabled(p) and Clean(SafeCall(api.GetCooldownViewerCooldownInfo, cid))
+            -- (one the game draws because its icon can't be trusted needs no place in Tracked Buffs)
+            local info = p and IsProcEnabled(p) and not Mirror.Prefers(p)
+                and Clean(SafeCall(api.GetCooldownViewerCooldownInfo, cid))
             if type(info) == "table" and Clean(info.isKnown) then out[#out + 1] = { cid = cid, proc = p } end
         end
     end
@@ -3727,6 +4018,39 @@ function CDM.SetupPending()
         end
     end
     return todo, CDM.HiddenRows()
+end
+
+-- Is this ticked buff still waiting for that? The Cooldown Manager hides many
+-- buffs by default (Ghostly Strike, Adrenaline Rush...): until the setup has
+-- put one in Tracked Buffs, at a logout or /reload, there's no icon for it,
+-- so ProcDoc sees it out of combat only. Looked up for the whole list at once
+-- and kept for a second (the options draw every row).
+function CDM.NeedsReload(proc)
+    local now = GetTime()
+    if not CDM.pendingAt or now - CDM.pendingAt > 1 or now < CDM.pendingAt then
+        CDM.pendingAt, CDM.pendingNames = now, {}
+        for _, name in ipairs((CDM.SetupPending())) do CDM.pendingNames[name] = true end
+    end
+    -- (one the game draws itself in combat is seen mid-fight already)
+    return (not proc.isAction and IsProcEnabled(proc) and CDM.pendingNames[proc.buffName]
+        and not Mirror.Covers(proc)) and true or false
+end
+
+-- Said when the player ticks or adds such a buff: it works out of combat at
+-- once, and that's easy to take for "working"
+function CDM.NoteTicked(proc)
+    CDM.pendingAt = nil
+    -- (the game's copy of it first: with one, it's seen mid-fight from now on. Section 9b)
+    if Mirror.Sync and not Remind.InCombat() then
+        Mirror.dirty = true
+        Mirror.Sync()
+    end
+    if not CDM.NeedsReload(proc) then return end
+    CDM.told = CDM.told or {}
+    CDM.told[proc.buffName] = true
+    Print("|cffffd100" .. proc.buffName .. "|r shows out of combat right away. To see it mid-fight too, type " ..
+        "|cff00ffff/reload|r once: ProcDoc then adds it to the Tracked Buffs of Blizzard's Cooldown Manager, " ..
+        "which is how it sees buffs in combat.")
 end
 
 -- Put ProcDoc's buffs that Blizzard left out into Tracked Buffs: the same
@@ -3826,7 +4150,8 @@ function CDM.Unseen()
     local _, listed = CDM.Wanted()
     for _, proc in ipairs(classProcs) do
         if IsProcEnabled(proc) and not proc.isAction and not watched[proc.key] and not listed[proc.key]
-            and not proc.castSignal and not proc.predictOn then
+            and not proc.castSignal and not proc.predictOn and not Mirror.Covers(proc)
+            and not (proc.fixedTime and proc.gainedBy) then
             out[#out + 1] = proc.buffName
         end
     end
@@ -3874,6 +4199,7 @@ end
 -- Is one of the Cooldown Manager's buff icons watching this proc? (The
 -- standard: then that icon is all ProcDoc goes by in combat; see Predict.Run.)
 Predict.IsWatched = function(proc)
+    if Mirror.Prefers(proc) then return false end     -- (an icon that can't be trusted doesn't count)
     for _, f in ipairs(CDM.Items()) do
         if CDM.ProcFor(CDM.CooldownID(f), f) == proc then return true end
     end
@@ -3987,12 +4313,31 @@ function CDM.Tip()
         C_Timer.After(1, GuardedHandler(function() CDM.Tip() end))   -- then what to set up
         return
     end
+    CDM.ready = true                                   -- (the game's lists are in: later changes can be told too)
+    CDM.TellPending()
+end
+
+-- Says which of your buff procs still wait for the setup's /reload before
+-- they show mid-fight (and a row that's Hidden in Edit Mode), once a session
+-- for each: after login, and when a new talent or spell brings one in. (One
+-- you tick or add is said at once: CDM.NoteTicked.)
+function CDM.TellPending()
     local todo, rows = CDM.SetupPending()
-    if (#todo > 0 or #rows > 0) and not CDM.toldSetup then
-        CDM.toldSetup = true
-        Print("will finish setting up Blizzard's Cooldown Manager the next time you |cff00ffff/reload|r or log out, so " ..
-            (#todo > 0 and ("|cffffd100" .. table.concat(todo, ", ") .. "|r") or "your procs") .. " light up mid-fight too.")
+    CDM.told = CDM.told or {}
+    local new = {}
+    for _, name in ipairs(todo) do
+        local proc = buffByName[name]
+        if not CDM.told[name] and not (proc and Mirror.Covers(proc)) then
+            CDM.told[name] = true
+            new[#new + 1] = name
+        end
     end
+    local rowsNew = #rows > 0 and not CDM.toldRows
+    if #new == 0 and not rowsNew then return end
+    if #rows > 0 then CDM.toldRows = true end
+    Print("will finish setting up Blizzard's Cooldown Manager the next time you |cff00ffff/reload|r or log out, so " ..
+        (#new > 0 and ("|cffffd100" .. table.concat(new, ", ") .. "|r") or "your procs") .. " light up mid-fight too. " ..
+        "Until then " .. (#new == 1 and "it shows" or "they show") .. " out of combat only.")
 end
 
 -- /procdoc cdm on: switch the Cooldown Manager on, then point out what to track
@@ -4287,11 +4632,12 @@ function CDM.Check()
     local watched, offered = {}, {}
     for _, f in ipairs(CDM.Items()) do
         local p = CDM.ProcFor(CDM.CooldownID(f), f)
-        if p then watched[p.key] = true end
+        if p and not Mirror.Prefers(p) then watched[p.key] = true end
     end
     local wanted, listed = CDM.Wanted()
     for _, w in ipairs(wanted) do offered[w.proc.key] = true end
     local bad = 0
+    Print("buff alerts drawn by the game in combat: " .. Mirror.Note())
     Print("your procs in combat:")
     for _, proc in ipairs(classProcs) do
         if IsProcEnabled(proc) then
@@ -4303,6 +4649,11 @@ function CDM.Check()
                 how = "seen (its Cooldown Manager icon)"
             elseif proc.castSignal then
                 how = "seen (read from " .. (GetSpellNameCompat(proc.castSignal.spell) or "its spell") .. ")"
+            elseif Mirror.Covers(proc) then
+                how = "drawn by the game itself (nothing to set up" ..
+                    (offered[proc.key] and "; its sound mid-fight too after your next /reload)" or ")")
+            elseif proc.fixedTime and proc.gainedBy then
+                how = "lit by your own casts"
             elseif offered[proc.key] then
                 how = "|cffffd100in the Cooldown Manager's list, not tracked yet|r: "
                     .. "ProcDoc adds it at your next /reload"
@@ -4319,6 +4670,543 @@ function CDM.Check()
         end
     end
     if bad == 0 and rowBad == 0 and #problems == 0 and on ~= false then Print("everything checks out.") end
+end
+
+-- 9b) Mirror: buff alerts drawn by the game itself, in combat
+--
+-- In combat Forever hides your buffs from addons. But it has a frame type of
+-- its own for exactly this, the aura container (Blizzard_AuraContainer:
+-- CreateFrame("AuraContainer", ..., "CustomAuraContainerTemplate")): an addon
+-- adds an "aura slot" for a list of buff numbers and builds its own frames
+-- inside the slot's button, and the GAME then shows that button while the buff
+-- is on you, mid-fight included, with the buff's real time left and stacks.
+-- The addon never learns when. No Cooldown Manager, no setup, no /reload.
+--
+-- So every ticked buff proc gets a copy of its alert in such a slot (the same
+-- image, place, size and turn; ProcDoc's own pieces aren't moved). The copy is
+-- switched on when a fight starts and off when it ends:
+--   * out of combat ProcDoc reads your buffs and draws its own alert, as ever
+--   * in combat the game draws the copy, and ProcDoc's own alert for that proc
+--     steps aside (Mirror.Owns, asked in RefreshAlert), so there's never two
+-- A proc ProcDoc can follow in combat by itself keeps its own alert there,
+-- sound included: one with a Cooldown Manager icon watching it, and one read
+-- from a spell (`castSignal`). Reminders and reaction abilities aren't buffs
+-- being up, so they're never copied.
+--
+-- What the game allows, and so how a copy is built (its own code:
+-- Blizzard_CustomAuraContainer.lua, Blizzard_CustomAuraButton.lua):
+--   * the slot's frames can't be touched in a fight ("deny tainted access when
+--     auras are secret"): everything is built and changed out of combat, and a
+--     change made mid-fight waits for its end (Mirror.Tick). Only switching a
+--     slot on or off is done at any time (a call on the container).
+--   * a slot can't be removed again: one that's no longer needed stays off
+--   * nothing of ProcDoc's runs when the game shows the copy, so no sound.
+--     Its way in and its pulse are animations the game plays itself
+--     (AddAuraShownAnimation), made once; the countdown is written by the
+--     game (SetDurationText) with ProcDoc's font, place and colours
+--   * stacks: a button can carry one bar the game shows from n stacks up
+--     (SetApplicationBar). So a copy is a pile of "layers", one slot per
+--     stack count that changes something: the lit dot for that count, the
+--     next image of a `stackImages` set (drawn over the one before), the
+--     second side of a one-side-per-stack pair, the `capImage`
+--   * only buffs: the game won't match a debuff on yourself by its number, so
+--     a proc whose aura is flagged as one (Arcane Blast: `noMirror`) can't be
+--     copied. That one ProcDoc lights from your own casts (Predict.Gain).
+-- Anything the game refuses is caught (pcall): the proc then simply keeps
+-- ProcDoc's own alert, as before. /procdoc check says which is which, and
+-- /procdoc mirror switches all of it off.
+
+-- Blizzard's aura container, made once (false: this game has none, or it refused)
+function Mirror.Box()
+    if Mirror.box ~= nil then return Mirror.box or nil end
+    Mirror.box = false
+    local addons = _G.C_AddOns
+    local load = (addons and addons.LoadAddOn) or _G.LoadAddOn
+    if load then pcall(load, "Blizzard_AuraContainer") end
+    local ok, c = pcall(CreateFrame, "AuraContainer", "ProcDocAuraContainer", UIParent, "CustomAuraContainerTemplate")
+    if not ok or type(c) ~= "table" or type(c.AddAuraSlot) ~= "function" then
+        Mirror.why = ok and "it has no aura slots" or tostring(c)
+        Trace("mirror: no aura container (%s)", Mirror.why)
+        return nil
+    end
+    pcall(c.SetAllPoints, c, UIParent)
+    pcall(c.SetFrameStrata, c, "MEDIUM")
+    pcall(c.SetUnit, c, "player")
+    pcall(c.SetEnabled, c, true)
+    Mirror.box = c
+    Trace("mirror: the game's aura container is there")
+    return c
+end
+
+-- The buff numbers to look for: the proc's own and those learned from scans
+function Mirror.Ids(proc)
+    local ids, list = {}, {}
+    for _, id in ipairs(proc.spellIDs or {}) do ids[id] = true end
+    for id in pairs(proc.learnedIDs or {}) do ids[id] = true end
+    for id in pairs(ids) do list[#list + 1] = id end
+    table.sort(list)
+    return ids, table.concat(list, ",")
+end
+
+-- Should the game draw this proc in combat?
+function Mirror.Wants(proc)
+    return (not G.noMirror and not proc.isAction and not proc.noMirror and not proc.castSignal
+        and IsProcEnabled(proc) and not Remind.Is(proc) and not PS(proc.key).oocOnly) and true or false
+end
+
+-- Is there a working copy of it (so it's seen mid-fight with nothing to set up)?
+function Mirror.Covers(proc)
+    local set = Mirror.sets[proc.key]
+    return (set ~= nil and set.ready == true and Mirror.Wants(proc)) and true or false
+end
+
+-- What a proc's copy is made of: a list of images, countdowns and dots, each
+-- with the number of stacks it shows from (0: whenever the buff is up). The
+-- same sums as LayoutAlert and the per-frame drawing (section 5).
+function Mirror.Spec(proc)
+    local s = PS(proc.key)
+    local x, y, both, region = ProcPlacement(proc)
+    local img, w, h, isIcon = ResolveImage(proc)
+    if not w then
+        if region == "TB" then w, h = 256, 128 else w, h = 128, 256 end
+    end
+    local scale = (s.scale or LAYOUT.scale) * (G.masterScale or 1)
+    local pixelScale = scale * PixelFactor()
+    local count = both and 2 or 1
+    local need = s.minStacks or proc.minStacks
+    local base = (need and need > 1) and need or 0
+    local function From(k) return (k <= 1) and base or math.max(k, base) end
+    local imgs = (not s.image) and proc.stackImages or nil
+    local sides = count == 2 and Pips.SidesByStacks(proc)
+    -- (as many dots as the player set, the proc's own, or the most it can have or was seen with)
+    local dots = Pips.Enabled(proc) and (s.maxStacks or proc.dotSlots or math.max(proc.maxSeen or 0, proc.charges or 0)) or 0
+    local alpha = s.alpha or 1
+    local els = {}
+    local function Add(kind, from, e)
+        e.kind, e.from = kind, from
+        els[#els + 1] = e
+    end
+    local fontPath, fontSize, outline = TimerFont(proc, scale)
+    local tr, tg, tb = ColorRGB(s.timerColor or G.timerColor or "gold")
+    local lr, lg, lb = ColorRGB(G.timerLowColor or "red")
+    local pr, pg, pb = ColorRGB(s.pipColor or "gold")
+    local pipSize = Pips.Size(proc, scale)
+    for i = 1, count do
+        local first = (sides and i == 2) and 2 or 1          -- the stack count this side first shows at
+        local px = (i == 2) and -x or x
+        local side = (i == 2) and -1 or 1
+        local rot, flip, dw, dh = PieceOrientation(region, px, y, w, h, s)
+        local bw, bh = dw * pixelScale, dh * pixelScale
+        if imgs then
+            for k = first, #imgs do
+                Add("tex", From(k), { img = imgs[k], x = px, y = y, w = bw, h = bh, rot = rot, flip = flip, a = alpha })
+            end
+        else
+            Add("tex", From(first), { img = img, x = px, y = y, w = bw, h = bh, rot = rot, flip = flip, icon = isIcon, a = alpha })
+        end
+        if TimerEnabled(proc) and not (i == 2 and s.timerOneSide) then
+            Add("timer", From(first), { x = px + (s.timerX or 0) * bw * side, y = y + (s.timerY or 0) * bh,
+                w = math.max(28, fontSize * 2.6), h = math.max(18, fontSize * 1.5),
+                img = fontPath, size = fontSize, outline = outline, r = tr, g = tg, b = tb, a = G.timerTextAlpha or 0.85,
+                lr = lr, lg = lg, lb = lb, low = G.timerLowThreshold or 3, decimals = G.timerDecimals ~= false })
+        end
+        if dots >= 2 and not (i == 2 and s.pipOneSide) then
+            local gap = pipSize * 0.35
+            local total = dots * pipSize + (dots - 1) * gap
+            local cx, cy = px + (s.pipX or 0) * bw * side, y + (s.pipY or -0.6) * bh
+            for k = 1, dots do
+                local dx = cx - total / 2 + pipSize / 2 + (k - 1) * (pipSize + gap)
+                Add("dot", From(first), { x = dx, y = cy, w = pipSize, h = pipSize, r = 0.5, g = 0.5, b = 0.55, a = 0.35 * alpha })
+                Add("dot", From(math.max(k, first)), { x = dx, y = cy, w = pipSize, h = pipSize, r = pr, g = pg, b = pb, a = alpha, lit = true })
+            end
+        end
+    end
+    if imgs and proc.capImage then
+        local size = IMAGE_SIZE[proc.capImage:lower()]
+        Add("tex", From(#imgs + 1), { img = proc.capImage, x = (both and 0 or x) + (s.capX or 0),
+            y = y + LAYOUT.topY + LAYOUT.top2 - LAYOUT.sideY + (s.capY or 0),
+            w = (size and size[1] or 256) * pixelScale, h = (size and size[2] or 128) * pixelScale, rot = 0, flip = false, a = alpha })
+    end
+    -- its signature: the copy is only rebuilt when this changes
+    local parts = {}
+    for n, e in ipairs(els) do
+        parts[n] = string.format("%s:%d:%s:%.1f:%.1f:%.1f:%.1f:%s:%s:%s:%.2f:%s:%s", e.kind, e.from, tostring(e.img),
+            e.x, e.y, e.w, e.h, tostring(e.rot), tostring(e.flip), tostring(e.size), e.a,
+            tostring(e.r) .. tostring(e.g) .. tostring(e.b) .. tostring(e.lit), tostring(e.low) .. tostring(e.decimals) .. tostring(e.outline))
+    end
+    return els, table.concat(parts, ";")
+end
+
+-- One layer of a copy: an aura slot whose button the game shows with the buff
+-- and, from `from` stacks up, the bar inside it that carries the layer's parts
+function Mirror.Layer(set, id, from, most)
+    local layer = set.layers[id]
+    if layer then return layer end
+    local box = Mirror.Box()
+    if not box then return nil end
+    layer = { id = id, key = "ProcDoc:" .. set.proc.key .. ":" .. id, tex = {}, dots = {}, used = 0 }
+    local ok, b = pcall(box.AddAuraSlot, box, layer.key, "HELPFUL", { candidateFilters = { includeSpellIDs = set.ids } })
+    if ok and type(b) ~= "table" and box.GetAuraSlotFrame then ok, b = pcall(box.GetAuraSlotFrame, box, layer.key) end
+    if not ok or type(b) ~= "table" then
+        set.failed = "the game refused an aura slot: " .. tostring(b)
+        return nil
+    end
+    set.layers[id] = layer
+    layer.button, layer.root = b, b
+    pcall(box.SetAuraSlotEnabled, box, layer.key, false)      -- (on in combat only: Mirror.Combat)
+    b:EnableMouse(false)
+    b:SetSize(1, 1)
+    b:ClearAllPoints()
+    b:SetPoint("CENTER", UIParent, "CENTER")
+    if from > 0 then
+        local bar = CreateFrame("StatusBar", nil, b)
+        bar:SetAllPoints(b)
+        local okBar, err = pcall(b.SetApplicationBar, b, bar, { minApplications = from, maxApplications = math.max(from + 1, most) })
+        if not okBar then
+            layer.dead = true                                 -- (shown from the first stack would be wrong: left out)
+            bar:Hide()
+            Trace("mirror: %s can't show from %d stacks (%s)", set.proc.key, from, tostring(err))
+        end
+        layer.root = bar
+    end
+    return layer
+end
+
+-- An animation the game plays itself when it shows the copy
+function Mirror.Anim(group, kind, from, to, duration, order, smooth)
+    local a = group:CreateAnimation(kind)
+    if kind == "Alpha" then
+        a:SetFromAlpha(from); a:SetToAlpha(to)
+    else
+        local setFrom, setTo = a.SetScaleFrom or a.SetFromScale, a.SetScaleTo or a.SetToScale
+        setFrom(a, from, from); setTo(a, to, to)
+    end
+    a:SetDuration(duration)
+    a:SetOrder(order or 1)
+    if smooth then a:SetSmoothing(smooth) end
+    return a
+end
+
+-- The way in (the same spring as ProcDoc's own pop-in, with its flash) and the
+-- pulse, handed to the game once. Each on a frame of its own that is never
+-- touched again: the game locks what it animates.
+function Mirror.Animate(layer, it)
+    local b = layer.button
+    if type(b.AddAuraShownAnimation) ~= "function" then return end
+    if G.popEnabled ~= false then
+        local peak = 1 + 0.15 * (G.popStrength or 1.7)
+        local pop = it.pop:CreateAnimationGroup()
+        Mirror.Anim(pop, "Alpha", 0, 1, POP_TIME * 0.2, 1)
+        Mirror.Anim(pop, "Scale", POP_FROM, peak, POP_TIME * POP_RISE, 1, "OUT")
+        Mirror.Anim(pop, "Scale", peak, 1, POP_TIME * (1 - POP_RISE), 2, "IN_OUT")
+        b:AddAuraShownAnimation(pop)
+        local flash = it.glow:CreateAnimationGroup()
+        Mirror.Anim(flash, "Alpha", 0.9, 0, POP_TIME, 1, "OUT")
+        Mirror.Anim(flash, "Scale", 1, 1.45, POP_TIME, 1)
+        b:AddAuraShownAnimation(flash)
+    end
+    local minA, maxA = G.minAlpha or 0.8, math.max(G.maxAlpha or 1, G.minAlpha or 0.8)
+    local minS, maxS = G.minScale or 0.9, math.max(G.maxScale or 1, G.minScale or 0.9)
+    local half = math.pi / math.max(0.2, (G.pulseSpeed or 0.4) * PULSE_RATE)
+    if maxA - minA > 0.01 or maxS - minS > 0.005 then
+        local beat = it.beat:CreateAnimationGroup()
+        beat:SetLooping("BOUNCE")
+        Mirror.Anim(beat, "Alpha", maxA, minA, half, 1, "IN_OUT")
+        Mirror.Anim(beat, "Scale", maxS, minS, half, 1, "IN_OUT")
+        b:AddAuraShownAnimation(beat)
+    end
+end
+
+-- An image of the copy: its place and size on a frame of ProcDoc's own, the
+-- frames the game animates inside it, the art in those
+function Mirror.Tex(layer, e)
+    layer.nTex = layer.nTex + 1
+    local it = layer.tex[layer.nTex]
+    if not it then
+        it = CreateFrame("Frame", nil, layer.root)
+        it.pop = CreateFrame("Frame", nil, it)
+        it.pop:SetAllPoints(it)
+        it.beat = CreateFrame("Frame", nil, it.pop)
+        it.beat:SetAllPoints(it.pop)
+        it.art = it.beat:CreateTexture(nil, "ARTWORK")
+        it.art:SetAllPoints(it.beat)
+        it.glow = CreateFrame("Frame", nil, it)
+        it.glow:SetAllPoints(it)
+        it.glow:SetAlpha(0)                                    -- (see-through, except while its flash plays)
+        it.flash = it.glow:CreateTexture(nil, "OVERLAY")
+        it.flash:SetAllPoints(it.glow)
+        it.flash:SetBlendMode("ADD")
+        layer.tex[layer.nTex] = it
+        local ok, err = pcall(Mirror.Animate, layer, it)
+        if not ok then Trace("mirror: no animations in %s (%s)", layer.key, tostring(err)) end
+    end
+    it:ClearAllPoints()
+    it:SetPoint("CENTER", ProcDoc, "CENTER", e.x, e.y)
+    it:SetSize(e.w, e.h)
+    it.art:SetTexture(e.img)
+    ApplyTexCoord(it.art, e.flip, e.icon, e.rot)
+    it.art:SetAlpha(e.a)
+    it.flash:SetTexture(e.img)
+    ApplyTexCoord(it.flash, e.flip, e.icon, e.rot)
+    it:Show()
+end
+
+function Mirror.Dot(layer, e)
+    if not layer.dotFrame then
+        layer.dotFrame = CreateFrame("Frame", nil, layer.root)
+        layer.dotFrame:SetAllPoints(layer.root)
+        layer.dotFrame:SetFrameLevel((layer.root:GetFrameLevel() or 1) + 6)
+    end
+    layer.nDots = layer.nDots + 1
+    local d = layer.dots[layer.nDots]
+    if not d then
+        d = layer.dotFrame:CreateTexture(nil, e.lit and "OVERLAY" or "ARTWORK")
+        d:SetTexture(Pips.TEX)
+        layer.dots[layer.nDots] = d
+    end
+    d:SetDrawLayer(e.lit and "OVERLAY" or "ARTWORK")
+    d:ClearAllPoints()
+    d:SetPoint("CENTER", ProcDoc, "CENTER", e.x, e.y)
+    d:SetSize(e.w, e.h)
+    d:SetVertexColor(e.r, e.g, e.b, e.a)
+    d:Show()
+end
+
+-- The countdown's rules for the game: whole seconds, tenths below the "low"
+-- mark (when decimals are on), and the low colour from there down
+function Mirror.TimeOptions(e)
+    local opts = {}
+    pcall(function()
+        local f = _G.C_StringUtil.CreateNumericRuleFormatter()
+        local down = Enum.NumericRuleFormatRounding.Down
+        if e.decimals then
+            f:SetBreakpoints({ { threshold = 0, step = 0.1, rounding = down, format = "%.1f" },
+                               { threshold = e.low, step = 1, rounding = down, format = "%.0f" } })
+        else
+            f:SetBreakpoints({ { threshold = 0, step = 1, rounding = down, format = "%.0f" } })
+        end
+        opts.textFormatter = f
+    end)
+    pcall(function()
+        local curve = _G.C_CurveUtil.CreateColorCurve()
+        curve:SetType(Enum.LuaCurveType.Step)
+        curve:AddPoint(0, _G.CreateColor(e.lr, e.lg, e.lb, e.a))
+        curve:AddPoint(e.low, _G.CreateColor(e.r, e.g, e.b, e.a))
+        opts.textColor = { curve = curve, property = Enum.DurationTextBindingProperty.RemainingDuration }
+    end)
+    return opts
+end
+
+-- The time left, written by the game. One per button, so a second countdown
+-- (the other side of a pair) gets a layer of its own (Mirror.Apply).
+function Mirror.Timer(layer, e)
+    local t = layer.timer
+    if not t then
+        t = CreateFrame("Frame", nil, layer.root)
+        t:SetFrameLevel((layer.root:GetFrameLevel() or 1) + 5)
+        t.text = t:CreateFontString(nil, "OVERLAY")
+        t.text:SetPoint("CENTER")
+        layer.timer = t
+    end
+    t:ClearAllPoints()
+    t:SetPoint("CENTER", ProcDoc, "CENTER", e.x, e.y)
+    t:SetSize(e.w, e.h)
+    local look = string.format("%s:%d:%s:%.2f%.2f%.2f%.2f", tostring(e.img), e.size, tostring(e.outline), e.r, e.g, e.b, e.a)
+    if layer.look ~= look then
+        layer.look = look
+        if layer.bound then                                   -- (the game has this text now: it may refuse a change)
+            pcall(t.text.SetFont, t.text, e.img, e.size, e.outline)
+            pcall(t.text.SetTextColor, t.text, e.r, e.g, e.b, e.a)
+        else
+            t.text:SetFont(e.img, e.size, e.outline)
+            t.text:SetTextColor(e.r, e.g, e.b, e.a)
+        end
+    end
+    local rules = string.format("%.1f:%s:%.2f%.2f%.2f:%.2f%.2f%.2f:%.2f", e.low, tostring(e.decimals), e.r, e.g, e.b, e.lr, e.lg, e.lb, e.a)
+    if layer.rules ~= rules then
+        local b = layer.button
+        local opts = Mirror.TimeOptions(e)
+        local ok = type(b.SetDurationText) == "function" and pcall(b.SetDurationText, b, t.text, opts)
+        if not ok and type(b.SetDurationText) == "function" then ok = pcall(b.SetDurationText, b, t.text) end
+        layer.rules, layer.bound = rules, ok and true or false
+    end
+    t:SetShown(layer.bound)
+    layer.hasTimer = true
+end
+
+-- Puts a proc's copy together from its parts
+function Mirror.Apply(set, els)
+    local most = 1
+    for _, e in ipairs(els) do most = math.max(most, e.from) end
+    for _, layer in pairs(set.layers) do
+        layer.nTex, layer.nDots, layer.hasTimer, layer.used = 0, 0, false, 0
+    end
+    local timers, shows = {}, 0
+    for _, e in ipairs(els) do
+        local id = tostring(e.from)
+        if e.kind == "timer" then
+            timers[e.from] = (timers[e.from] or 0) + 1
+            if timers[e.from] > 1 then id = id .. "t" .. timers[e.from] end
+        end
+        local layer = Mirror.Layer(set, id, e.from, most)
+        if layer and layer.nTex == nil then layer.nTex, layer.nDots, layer.hasTimer = 0, 0, false end
+        if layer and not layer.dead then
+            layer.used = layer.used + 1
+            local place = (e.kind == "tex" and Mirror.Tex) or (e.kind == "dot" and Mirror.Dot) or Mirror.Timer
+            local ok, err = pcall(place, layer, e)
+            if ok and e.kind == "tex" then
+                shows = shows + 1
+            elseif not ok then
+                set.failed = tostring(err)                    -- (the rest still stands; said in the trace)
+            end
+        end
+    end
+    for _, layer in pairs(set.layers) do                      -- what an earlier look left over
+        for n = (layer.nTex or 0) + 1, #layer.tex do layer.tex[n]:Hide() end
+        for n = (layer.nDots or 0) + 1, #layer.dots do layer.dots[n]:Hide() end
+        if layer.timer and not layer.hasTimer then layer.timer:Hide() end
+    end
+    return shows > 0
+end
+
+-- Builds or updates one proc's copy (out of combat only)
+function Mirror.Build(set, ids, idSig)
+    local box = Mirror.Box()
+    if not box then return end
+    local els, sig = Mirror.Spec(set.proc)
+    sig = idSig .. "#" .. sig
+    if set.sig == sig and set.ready then return end
+    if set.idSig ~= idSig then
+        for _, layer in pairs(set.layers) do
+            pcall(box.SetAuraSlotCandidateFilters, box, layer.key, { includeSpellIDs = ids })
+        end
+        set.ids, set.idSig = ids, idSig
+    end
+    set.failed = nil
+    set.ready = Mirror.Apply(set, els)
+    set.sig = sig
+    Trace("mirror: %s %s (buff %s)", set.proc.key,
+        set.ready and "can be drawn by the game" or ("left to ProcDoc's own alert: " .. tostring(set.failed or "nothing to draw")), idSig)
+end
+
+-- Brings every copy up to date (out of combat only): the procs that changed,
+-- or all of them
+function Mirror.Sync()
+    local all = Mirror.dirty
+    Mirror.dirty = false
+    for _, proc in ipairs(buffProcs) do
+        if all or Mirror.touch[proc.key] then
+            local set = Mirror.sets[proc.key]
+            local ids, idSig = Mirror.Ids(proc)
+            if Mirror.Wants(proc) and idSig ~= "" and Mirror.Box() then
+                if not set then
+                    set = { proc = proc, layers = {}, ids = ids }
+                    Mirror.sets[proc.key] = set
+                end
+                set.proc = proc
+                local ok, err = pcall(Mirror.Build, set, ids, idSig)
+                if not ok then
+                    set.ready, set.failed = false, tostring(err)
+                    Trace("mirror: %s left to ProcDoc's own alert (%s)", proc.key, set.failed)
+                elseif set.failed and set.said ~= set.failed then
+                    set.said = set.failed
+                    Trace("mirror: part of %s was refused by the game (%s)", proc.key, set.failed)
+                end
+            elseif set then
+                set.ready = false
+            end
+        end
+    end
+    wipe(Mirror.touch)
+    for key, set in pairs(Mirror.sets) do                     -- procs that are gone (removed, or rebuilt as an ability)
+        if procByKey[key] ~= set.proc then set.ready = false end
+    end
+end
+
+-- Switches a copy's slots on or off. Returns whether the game took it.
+function Mirror.Switch(set, on)
+    local box = Mirror.box
+    if not box then return false end
+    local took = true
+    for _, layer in pairs(set.layers) do
+        local want = (on and layer.used > 0 and not layer.dead) and true or false
+        if layer.on ~= want then
+            local ok = pcall(box.SetAuraSlotEnabled, box, layer.key, want)
+            if ok and box.IsAuraSlotEnabled then
+                local okNow, now = pcall(box.IsAuraSlotEnabled, box, layer.key)
+                if okNow and type(now) == "boolean" then ok = (now == want) end
+            end
+            if ok then
+                layer.on = want
+            else
+                layer.on, took = nil, false
+            end
+        end
+    end
+    return took
+end
+
+-- A fight starts or ends
+function Mirror.Combat(inCombat)
+    if not Mirror.box then return end
+    for key, set in pairs(Mirror.sets) do
+        -- (one with a Cooldown Manager icon is ProcDoc's own in combat, sound and all)
+        local on = (inCombat and set.ready and Mirror.Wants(set.proc)
+            and not (Predict.IsWatched and Predict.IsWatched(set.proc))) and true or false
+        local took = Mirror.Switch(set, on)
+        local was = set.on
+        set.on = on and took
+        if set.on ~= was then
+            local a = alerts[key]
+            if a then
+                if set.on and a.shown and not a.test and not unlockMode then HideAlertNow(a) end   -- the game's copy takes over at once
+                RefreshAlert(a)
+            end
+            if set.on then Trace("mirror: %s drawn by the game this fight", key) end
+        end
+    end
+end
+
+-- Out of combat: copies follow what changed, and a slot the game wouldn't
+-- switch off yet is asked again
+function Mirror.Tick()
+    if Remind.InCombat() or (InCombatLockdown and InCombatLockdown()) then return end
+    local now = GetTime()
+    if now - (Mirror.last or 0) < 0.3 then return end
+    Mirror.last = now
+    if Mirror.dirty or next(Mirror.touch) then Mirror.Sync() end
+    if Mirror.box then
+        for _, set in pairs(Mirror.sets) do
+            for _, layer in pairs(set.layers) do
+                if layer.on ~= false then
+                    Mirror.Switch(set, false)
+                    break
+                end
+            end
+            set.on = false
+        end
+    end
+end
+
+-- /procdoc mirror: all of it off, or on again
+function Mirror.Toggle()
+    G.noMirror = (not G.noMirror) or nil
+    Mirror.dirty = true
+    if Remind.InCombat() then Mirror.Combat(true) end
+    Print(G.noMirror and "the game no longer draws your buff alerts in combat: ProcDoc shows what it can see itself there " ..
+        "(through Blizzard's Cooldown Manager). |cff00ffff/procdoc mirror|r switches it back on."
+        or "the game draws your buff alerts in combat again, with nothing to set up.")
+end
+
+-- /procdoc check: how many procs the game will draw, or why none
+function Mirror.Note()
+    if G.noMirror then return "switched off (|cff00ffff/procdoc mirror|r switches it on)" end
+    if Mirror.box == false then return "|cffffd100not in this game|r (" .. tostring(Mirror.why) .. ")" end
+    local n = 0
+    for _, proc in ipairs(buffProcs) do
+        if Mirror.Covers(proc) then n = n + 1 end
+    end
+    return n .. (n == 1 and " buff proc" or " buff procs") .. ", with nothing to set up"
 end
 
 do
@@ -4338,6 +5226,11 @@ cdmFrame:SetScript("OnEvent", GuardedHandler(function(self, event)
     elseif not CDM.syncPending then                               -- new spells or talents: list them
         CDM.syncPending = true
         C_Timer.After(1, GuardedHandler(function() CDM.syncPending = false; SyncCatalog() end))
+        -- a talent just learned can bring in a buff the Cooldown Manager isn't showing yet
+        C_Timer.After(3, GuardedHandler(function()
+            CDM.pendingAt = nil
+            if initialized and CDM.ready then CDM.TellPending() end
+        end))
     end
 end))
 cdmFrame:SetScript("OnUpdate", GuardedHandler(function(self, dt)
@@ -4346,6 +5239,7 @@ cdmFrame:SetScript("OnUpdate", GuardedHandler(function(self, dt)
     CDM.elapsed = 0
     CDM.Poll()
     Signal.Poll()
+    Mirror.Tick()
 end))
 end
 
@@ -5109,6 +6003,7 @@ local function SetProcEnabled(proc, v)
     else
         if v then PSW(proc.key).enabled = nil else PSW(proc.key).enabled = false end
     end
+    if v then CDM.NoteTicked(proc) end                -- (mid-fight only after a /reload? then say so)
 end
 
 local function ProcKindText(proc)
@@ -5116,6 +6011,9 @@ local function ProcKindText(proc)
     local spell = proc.localName or proc.spellName
     local when = proc.isAction and (proc.cdOnly and ("while " .. tostring(spell) .. " is on cooldown, counting down until it's back")
         or ("while " .. tostring(spell) .. " is available (off cooldown and usable)"))
+    if CDM.NeedsReload(proc) then
+        return "|cffffd100Out of combat only until your next /reload|r (ProcDoc then adds it to the Cooldown Manager's Tracked Buffs)"
+    end
     if proc.cdm then
         return "From Blizzard's Cooldown Manager: lights up " .. (when or ("while you have " .. proc.buffName))
     end
@@ -5140,6 +6038,7 @@ local function ShortKind(proc)
         if proc.custom or proc.cdm then return "Lights up when available" end
         return "Reaction ability"
     end
+    if CDM.NeedsReload(proc) then return "|cffffd100/reload to see it mid-fight too|r" end
     if proc.minStacks then return "Lights up at " .. proc.minStacks .. " stacks" end
     return "Lights up while you have the buff"
 end
@@ -5156,8 +6055,10 @@ end
 
 local TIMER_OPTIONS = {
     { value = "default", label = "Use global setting" },
-    { value = "on",      label = "Always show" },
-    { value = "off",     label = "Never show" },
+    { value = "on",      label = "The number counting down" },
+    { value = "fade",    label = "The alert fading with a sweeping line" },
+    { value = "both",    label = "The number and the sweeping line" },
+    { value = "off",     label = "Neither" },
 }
 
 local function UpdatePreviewBox()
@@ -5618,6 +6519,7 @@ local function RebuildProcList()
                 return
             end
             Print("added |cffffd100" .. proc.buffName .. "|r. Drag it on screen to place it.")
+            CDM.NoteTicked(proc)
             SelectView("PROC", proc.key)
             PreviewAfterChange(proc)
         end
@@ -5865,8 +6767,19 @@ function ProcUI.Alert(page, st, child)
         function(v)
             if not pageProc then return end
             PSW(pageProc.key).combatOnly = v or nil
+            if v then PSW(pageProc.key).oocOnly = nil end            -- (one or the other)
             ReevaluateAll()
-        end, "Shows this alert only while you're in combat. Handy for a reminder you can't act on out of combat, like a missing Battle Shout."), 16, nil, 10)
+            ProcUI.Refresh()
+        end, "Shows this alert only while you're in combat. Handy for a reminder you can't act on out of combat, like a missing Battle Shout. Turns off Only out of combat."), 16, nil, 10)
+    rs:Add(CreateCheck(rest, "Only out of combat",
+        function() return pageProc and PS(pageProc.key).oocOnly end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).oocOnly = v or nil
+            if v then PSW(pageProc.key).combatOnly = nil end         -- (one or the other)
+            ReevaluateAll()
+            ProcUI.Refresh()
+        end, "Shows this alert only while you're out of combat, and hides it the moment a fight starts. Handy for something you only want to see between fights, like a food buff. Turns off Only in combat."), 16, nil, 10)
     -- (Overpower) also in the other stances, on your target's dodge; BindProcPage
     -- shows it only where it applies and moves the rest up otherwise
     page.stanceY = rs.y
@@ -6010,11 +6923,11 @@ end
 
 -- Timer: its countdown
 function ProcUI.Timer(page, st, child)
-    st:Add(CreateHeader(child, "Countdown", COL), 18)
+    st:Add(CreateHeader(child, "Time left", COL), 18)
     local thow = st:Add(Label(child,
         "Drag the number on screen to move it.\nShift + mouse wheel over it to resize it."), 26, nil, 8)
     thow:SetJustifyH("LEFT")
-    st:Add(Label(child, "Show countdown"), 12, nil, 4)
+    st:Add(Label(child, "Show time left as"), 12, nil, 4)
     st:Add(CreateDropdown(child, COL, function() return TIMER_OPTIONS end,
         function() return pageProc and PS(pageProc.key).timer or "default" end,
         function(v)
@@ -6292,6 +7205,12 @@ local function BuildGeneralPage(parent)
         function() return not G.disableTimers end,
         function(v) G.disableTimers = not v; PreviewAfterChange(nil) end,
         "Shows the seconds left on each proc. Individual procs can override this."), 16, nil, 10)
+    st:Add(CreateCheck(child, "Fade alerts as their time runs out",
+        function() return G.fadeTimers == true end,
+        function(v) G.fadeTimers = v or false; PreviewAfterChange(nil) end,
+        "A line sweeps over the alert as its time runs out, from the top down (side to side for a wide one), and what it has passed fades to half: a way to see the time without a number. " ..
+        "Turn the countdown timers off above for the line alone, or keep both. Individual procs can override this. " ..
+        "An alert the game draws itself in a fight (one ProcDoc can't read) can't do this: the game doesn't let ProcDoc change it."), 16, nil, 10)
     GDropdown("Font", "timerFont", FONT_CHOICES)
     GDropdown("Outline", "timerOutline", OUTLINE_CHOICES)
     GSlider("Text size (per proc: Shift + wheel over the number)", "timerTextSize", 8, 60, 1, px,
@@ -6507,9 +7426,13 @@ local function BuildImagePicker(parent)
     p.defaultTile = MakeTile("ProcDoc default for this proc", DEFAULT_ALERT_TEXTURE, 256, 128, nil)
     p.iconTile = MakeTile("Spell icon", "Interface\\Icons\\INV_Misc_QuestionMark", 64, 64, "ICON", { 0.08, 0.92, 0.08, 0.92 })
     p.blizzTile = MakeTile("Blizzard's proc art for this spell", "Interface\\Icons\\INV_Misc_QuestionMark", 128, 256, "BLIZZARD")
+    -- No picture at all: a see-through image (img/Invisible.tga), so the stack dots and the
+    -- countdown stay where they are (a player asked for the dots of Arcane Blast alone)
+    p.noneTile = MakeTile("No image (only the stack dots and the countdown stay)", "Interface\\Buttons\\UI-GroupLoot-Pass-Up", 64, 64,
+        IMG .. "Invisible.tga")
     Section("Alert art")
     for _, e in ipairs(IMAGE_LIST) do
-        MakeTile(e.label, e.path, e[2], e[3], e.path)
+        if e[1] ~= "Invisible" then MakeTile(e.label, e.path, e[2], e[3], e.path) end
     end
     page:SetContentHeight(-y + STEP + 8)
 
@@ -6926,6 +7849,32 @@ function Wizard.Status()
     local M, C = Wizard.MARK, Wizard.C
     local lines = {}
     local on = CDM.Enabled()
+    -- The game draws buff alerts in combat by itself (section 9b): then nothing
+    -- needs setting up, and the Cooldown Manager only adds their sound there
+    if Mirror.box and not G.noMirror then
+        lines[1] = M.ok .. "The game draws your buff alerts in combat: nothing to set up."
+        local pending, off = false, false
+        if C_CooldownViewer and on == false then
+            lines[2] = M.wait .. "For their sound mid-fight too, the Cooldown Manager has to be on."
+            off = true
+        elseif C_CooldownViewer and on then
+            local todo, hidden = CDM.SetupPending()
+            if #todo > 0 or #hidden > 0 then
+                lines[2] = M.wait .. "For their sound mid-fight too, reload once" ..
+                    (#todo > 0 and (": " .. C.hl .. table.concat(todo, ", ") .. "|r.") or ".")
+                pending = true
+            else
+                lines[2] = M.ok .. "Their sound plays mid-fight too, through the Cooldown Manager."
+            end
+        end
+        local unseen = CDM.Unseen()
+        if #unseen > 0 then
+            lines[#lines + 1] = M.bad .. C.hl .. table.concat(unseen, ", ") .. "|r can only be shown out of combat."
+        else
+            lines[#lines + 1] = C.good .. "All set.|r Your procs will show in the middle of a fight."
+        end
+        return lines, pending, off
+    end
     if not C_CooldownViewer or on == nil then
         lines[1] = M.bad .. "This game has no Cooldown Manager, so buff procs only show out of combat."
         return lines, false, false
@@ -7007,8 +7956,12 @@ Wizard.STEPS = {
         end
         return {
             title = "Seeing procs in combat",
-            text = "In combat the game hides your buffs from addons. Blizzard's Cooldown Manager can still see them, " ..
-                "so ProcDoc reads your procs from it, and sets it up for you:",
+            text = (Mirror.box and not G.noMirror)
+                and ("In combat the game hides your buffs from addons, so ProcDoc has the game itself draw your buff " ..
+                    "alerts there. That works from your first fight, with nothing to set up.\n\nBlizzard's Cooldown " ..
+                    "Manager adds one thing: with it, an alert also plays its sound mid-fight.")
+                or ("In combat the game hides your buffs from addons. Blizzard's Cooldown Manager can still see them, " ..
+                    "so ProcDoc reads your procs from it, and sets it up for you:"),
             lines = lines, buttons = buttons,
         }
     end,
@@ -7017,7 +7970,8 @@ Wizard.STEPS = {
             title = "On screen, or out of sight?",
             text = "The Cooldown Manager puts its own rows of icons on your screen. ProcDoc only needs it running, " ..
                 "not visible, so you can hide them.\n\nDon't switch it off, and don't set it to Hidden in Edit Mode: " ..
-                "both stop your procs showing in combat.",
+                ((Mirror.box and not G.noMirror) and "your alerts would still show in combat, but without their sound."
+                    or "both stop your procs showing in combat."),
             lines = { "Right now its icons are " .. C.hl .. (G.cdmHideBuffs and "hidden" or "on screen") .. "|r.",
                       C.dim .. "Later: Settings > Setup, or /procdoc cdm hide and /procdoc cdm show.|r" },
             buttons = { { "Hide its icons", function() CDM.SetHidden(true) end },
@@ -7375,6 +8329,8 @@ SlashCmdList["PROCDOC"] = function(msg)
         end
     elseif cmd == "check" then
         CDM.Check()
+    elseif cmd == "mirror" then
+        Mirror.Toggle()
     elseif cmd == "setup" or cmd == "wizard" or cmd == "tutorial" then
         CDM.Wizard.Show(1)
     elseif cmd == "stacktest" then
