@@ -3466,9 +3466,12 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
         -- Aura data unlocks after combat: resync everything
         Trace("left combat")
         Remind.inCombat = false
-        Mirror.Combat(false)                   -- buffs are readable again: ProcDoc's own alerts take over
         for _, st in pairs(actionState) do st.flagOn, st.offSince, st.flagSince = nil, nil, nil end
         CheckProcs()
+        -- buffs are readable again: ProcDoc's own alerts take over from the game's copies. Only now, after
+        -- the re-read: before it, an alert whose buff was used up mid-fight came back for a moment on what
+        -- ProcDoc last believed, and shrank away again (players saw procs "for a split second after the buff is gone")
+        Mirror.Combat(false)
         CheckAllActionProcs()
         -- (after the re-check, so an "Only out of combat" alert comes back only if its buff is really still there,
         -- not for a moment because of what ProcDoc last believed in the fight)
@@ -4700,10 +4703,13 @@ end
 --     change made mid-fight waits for its end (Mirror.Tick). Only switching a
 --     slot on or off is done at any time (a call on the container).
 --   * a slot can't be removed again: one that's no longer needed stays off
---   * nothing of ProcDoc's runs when the game shows the copy, so no sound.
---     Its way in and its pulse are animations the game plays itself
---     (AddAuraShownAnimation), made once; the countdown is written by the
---     game (SetDurationText) with ProcDoc's font, place and colours
+--   * nothing of ProcDoc's runs when the game shows the copy, so no sound,
+--     and no pop-in or pulse either: 4.19.0 handed the game those as
+--     animations (AddAuraShownAnimation), and in real fights the game
+--     mishandled them (the picture went big then small, or went missing
+--     while its countdown showed; a plain copy, tested in game, is right).
+--     The countdown is written by the game (SetDurationText) with
+--     ProcDoc's font, place and colours
 --   * stacks: a button can carry one bar the game shows from n stacks up
 --     (SetApplicationBar). So a copy is a pile of "layers", one slot per
 --     stack count that changes something: the lit dot for that count, the
@@ -4872,53 +4878,10 @@ function Mirror.Layer(set, id, from, most)
     return layer
 end
 
--- An animation the game plays itself when it shows the copy
-function Mirror.Anim(group, kind, from, to, duration, order, smooth)
-    local a = group:CreateAnimation(kind)
-    if kind == "Alpha" then
-        a:SetFromAlpha(from); a:SetToAlpha(to)
-    else
-        local setFrom, setTo = a.SetScaleFrom or a.SetFromScale, a.SetScaleTo or a.SetToScale
-        setFrom(a, from, from); setTo(a, to, to)
-    end
-    a:SetDuration(duration)
-    a:SetOrder(order or 1)
-    if smooth then a:SetSmoothing(smooth) end
-    return a
-end
-
--- The way in (the same spring as ProcDoc's own pop-in, with its flash) and the
--- pulse, handed to the game once. Each on a frame of its own that is never
--- touched again: the game locks what it animates.
-function Mirror.Animate(layer, it)
-    local b = layer.button
-    if type(b.AddAuraShownAnimation) ~= "function" then return end
-    if G.popEnabled ~= false then
-        local peak = 1 + 0.15 * (G.popStrength or 1.7)
-        local pop = it.pop:CreateAnimationGroup()
-        Mirror.Anim(pop, "Alpha", 0, 1, POP_TIME * 0.2, 1)
-        Mirror.Anim(pop, "Scale", POP_FROM, peak, POP_TIME * POP_RISE, 1, "OUT")
-        Mirror.Anim(pop, "Scale", peak, 1, POP_TIME * (1 - POP_RISE), 2, "IN_OUT")
-        b:AddAuraShownAnimation(pop)
-        local flash = it.glow:CreateAnimationGroup()
-        Mirror.Anim(flash, "Alpha", 0.9, 0, POP_TIME, 1, "OUT")
-        Mirror.Anim(flash, "Scale", 1, 1.45, POP_TIME, 1)
-        b:AddAuraShownAnimation(flash)
-    end
-    local minA, maxA = G.minAlpha or 0.8, math.max(G.maxAlpha or 1, G.minAlpha or 0.8)
-    local minS, maxS = G.minScale or 0.9, math.max(G.maxScale or 1, G.minScale or 0.9)
-    local half = math.pi / math.max(0.2, (G.pulseSpeed or 0.4) * PULSE_RATE)
-    if maxA - minA > 0.01 or maxS - minS > 0.005 then
-        local beat = it.beat:CreateAnimationGroup()
-        beat:SetLooping("BOUNCE")
-        Mirror.Anim(beat, "Alpha", maxA, minA, half, 1, "IN_OUT")
-        Mirror.Anim(beat, "Scale", maxS, minS, half, 1, "IN_OUT")
-        b:AddAuraShownAnimation(beat)
-    end
-end
-
 -- An image of the copy: its place and size on a frame of ProcDoc's own, the
--- frames the game animates inside it, the art in those
+-- art inside it. Plain: no animations (see the notes above). The frames
+-- inside are the ones 4.19.0 animated, kept as they are: this is exactly the
+-- copy that was tested in real fights.
 function Mirror.Tex(layer, e)
     layer.nTex = layer.nTex + 1
     local it = layer.tex[layer.nTex]
@@ -4932,13 +4895,11 @@ function Mirror.Tex(layer, e)
         it.art:SetAllPoints(it.beat)
         it.glow = CreateFrame("Frame", nil, it)
         it.glow:SetAllPoints(it)
-        it.glow:SetAlpha(0)                                    -- (see-through, except while its flash plays)
+        it.glow:SetAlpha(0)                                    -- (see-through: 4.19.0's flash, no longer played)
         it.flash = it.glow:CreateTexture(nil, "OVERLAY")
         it.flash:SetAllPoints(it.glow)
         it.flash:SetBlendMode("ADD")
         layer.tex[layer.nTex] = it
-        local ok, err = pcall(Mirror.Animate, layer, it)
-        if not ok then Trace("mirror: no animations in %s (%s)", layer.key, tostring(err)) end
     end
     it:ClearAllPoints()
     it:SetPoint("CENTER", ProcDoc, "CENTER", e.x, e.y)
