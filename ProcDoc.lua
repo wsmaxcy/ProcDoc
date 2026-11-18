@@ -525,6 +525,7 @@ local PROC_DATA = {
                                  IMG .. "LightningStage4.tga", IMG .. "LightningWings.tga" },
             alertStyle       = "BOTTOM",
             dotSlots         = 5,                -- stacks up to 5, shown as dots
+            soundStacks      = 5,                -- its sound when the 5th stack lands (Pips.SoundAt)
             consumedBy       = { "Lightning Bolt" },
         },
     },
@@ -1057,6 +1058,76 @@ end
 -- spare main-chunk locals.
 local Pips = { TEX = "Interface\\AddOns\\ProcDoc\\ProcDoc_Pip" }   -- tools/make_icon.py
 
+-- A proc's own dot shape (pips/: tools/make_pips.py, and the elements
+-- tools/make_element_pips.py, all white and tinted by Dot color; Round is the
+-- original dot) and how its row of dots is laid out, both picked on its Stacks page
+Pips.SHAPES = { { value = "round", label = "Round" }, { value = "ring", label = "Ring", file = "Ring" },
+    { value = "diamond", label = "Diamond", file = "Diamond" }, { value = "square", label = "Square", file = "Square" },
+    { value = "star", label = "Star", file = "Star" }, { value = "bar", label = "Bar", file = "Bar" },
+    { value = "drop", label = "Drop", file = "Drop" },
+    { value = "fire", label = "Fire", file = "Fire" }, { value = "frost", label = "Frost", file = "Frost" },
+    { value = "lightning", label = "Lightning", file = "Lightning" }, { value = "arcane", label = "Arcane", file = "Arcane" },
+    { value = "nature", label = "Nature", file = "Nature" }, { value = "shadow", label = "Shadow", file = "Shadow" },
+    { value = "light", label = "Light", file = "Light" }, { value = "fel", label = "Fel", file = "Fel" },
+    { value = "blood", label = "Blood", file = "Blood" }, { value = "poison", label = "Poison", file = "Poison" } }
+Pips.LAYOUTS = { { value = "row", label = "In a row" }, { value = "column", label = "In a column (filling upward)" },
+    { value = "curve", label = "Curved row (bowing toward the alert)" },
+    { value = "vcurve", label = "Curved column (bowing toward the alert)" } }
+function Pips.ShapeTex(value)
+    for _, sh in ipairs(Pips.SHAPES) do
+        if sh.value == value and sh.file then return "Interface\\AddOns\\ProcDoc\\pips\\" .. sh.file end
+    end
+    return Pips.TEX
+end
+function Pips.Tex(proc) return Pips.ShapeTex(PS(proc.key).pipShape) end
+
+-- Where dot k of `slots` sits, from the middle of the group: in a row (the
+-- original), a column filling upward, or either bent into a gentle curve whose
+-- ends bow toward the alert (`bow`, from Pips.Bow: which way they bend)
+function Pips.Offset(layout, k, slots, size, bow)
+    local along = (k - (slots + 1) / 2) * size * 1.35
+    if layout == "column" then return 0, along end
+    if layout == "curve" or layout == "vcurve" then
+        local r = math.max(slots, 3) * size * 1.35 * 0.85
+        local t = along / r
+        local bend = (bow or 1) * r * (1 - math.cos(t))
+        if layout == "vcurve" then return bend, r * math.sin(t) end
+        return r * math.sin(t), bend
+    end
+    return along, 0
+end
+-- The way a curve's ends bend, toward the alert. A curved row: up (1) when the
+-- dots are below it, down (-1) above it. A curved column: left (-1) when the
+-- dots are to the right of their piece (`side`: -1 for a pair's mirrored
+-- piece), right (1) to its left; straight under it, toward the middle of the
+-- screen (`px`: the piece's place), so a pair reads ( ).
+function Pips.Bow(s, side, px)
+    if s.pipLayout == "vcurve" then
+        local dx = (s.pipX or 0) * (side or 1)
+        if dx == 0 then dx = px or 0 end
+        return (dx > 0) and -1 or 1
+    end
+    return ((s.pipY or -0.6) > 0) and -1 or 1
+end
+
+-- "Play the sound at (stacks)": a stacking buff's sound waits for this many
+-- stacks instead of playing when its alert first shows (Maelstrom Weapon: 5).
+-- nil: as soon as it shows. The player's pick, else the proc's own.
+function Pips.SoundAt(proc)
+    if proc.isAction or Remind.Is(proc) then return nil end
+    local v = PS(proc.key).soundStacks
+    if v == nil then v = proc.soundStacks end
+    return (v and v > 1) and v or nil
+end
+-- Hold the sound back now? Only when a real stack count is known and short
+-- of it (no count, or only charges ProcDoc counts itself: at once, as before).
+function Pips.HoldSound(a)
+    local at = Pips.SoundAt(a.proc)
+    if not at then return false end
+    local n, src = Pips.Count(a)
+    return (src and n and n < at) and true or false
+end
+
 -- Buff alerts the game draws itself while it hides your buffs (section 9b).
 -- Declared here: showing an alert first asks whether the game has it.
 local Mirror = { sets = {}, touch = {}, dirty = true }
@@ -1103,21 +1174,26 @@ function Pips.Size(proc, scale)
     return math.floor(11 * math.min(math.max(f, 0.6), 1.6) + 0.5)
 end
 
--- Lays out `slots` dots with `filled` lit; the newest dot pops for 0.3s
+-- Lays out `slots` dots with `filled` lit; the newest dot pops for 0.3s.
+-- Shape and layout come from the proc (pf.tex, pf.layout, pf.bow: LayoutAlert).
 function Pips.Draw(pf, filled, slots, r, g, b, sinceGain, alpha)
     local size = pf.size or 11
-    local gap = size * 0.35
-    local total = slots * size + (slots - 1) * gap
-    pf:SetSize(math.max(total, 16), size + 6)
+    local tex, layout, bow = pf.tex or Pips.TEX, pf.layout or "row", pf.bow or 1
+    local w, h = 16, size + 6                       -- (the box the dots are dragged by)
     for k = 1, slots do
         local d = pf.dots[k]
         if not d then
             d = pf:CreateTexture(nil, "ARTWORK")
-            d:SetTexture(Pips.TEX)
             pf.dots[k] = d
         end
+        if d.shapeTex ~= tex then
+            d:SetTexture(tex)
+            d.shapeTex = tex
+        end
+        local ox, oy = Pips.Offset(layout, k, slots, size, bow)
+        w, h = math.max(w, 2 * math.abs(ox) + size), math.max(h, 2 * math.abs(oy) + size + 6)
         d:ClearAllPoints()
-        d:SetPoint("CENTER", pf, "CENTER", -total / 2 + size / 2 + (k - 1) * (size + gap), 0)
+        d:SetPoint("CENTER", pf, "CENTER", ox, oy)
         local sz = size
         if k == filled and sinceGain < 0.3 then sz = size * (1 + 0.8 * (1 - sinceGain / 0.3)) end
         d:SetSize(sz, sz)
@@ -1128,6 +1204,7 @@ function Pips.Draw(pf, filled, slots, r, g, b, sinceGain, alpha)
         end
         d:Show()
     end
+    pf:SetSize(w, h)
     for k = slots + 1, #pf.dots do pf.dots[k]:Hide() end
 end
 
@@ -1491,6 +1568,7 @@ LayoutAlert = function(a)
             (s.timerX or 0) * p.baseW * ((i == 2) and -1 or 1), (s.timerY or 0) * p.baseH)
         local pf = p.pipFrame
         pf.size = pipSize
+        pf.tex, pf.layout, pf.bow = Pips.Tex(proc), s.pipLayout or "row", Pips.Bow(s, (i == 2) and -1 or 1, px)
         pf:ClearAllPoints()
         pf:SetPoint("CENTER", p, "CENTER",
             (s.pipX or 0) * p.baseW * ((i == 2) and -1 or 1), (s.pipY or -0.6) * p.baseH)
@@ -1611,7 +1689,9 @@ function Remind.UpdateLive(a, why)
         a.phase = 0
         a.liveSince = GetTime()
         a.popStart = a.liveSince
-        ProcDoc_PlayAlertSound(a.proc)
+        -- (one whose sound waits for its stacks plays it from the alert's frame update)
+        a.soundDone = not Pips.HoldSound(a)
+        if a.soundDone then ProcDoc_PlayAlertSound(a.proc) end
     end
     if live ~= a.live then
         a.live = live
@@ -1887,6 +1967,17 @@ local function OnUpdateHandler(self, elapsed)
             -- Stacks: live count from the buff, or a counting sample in previews
             local stacks, slots
             local count, countSrc = Pips.Count(a)
+            -- a sound that waits for its stacks (Pips.SoundAt): once each time they get there
+            -- (a real stack count only, as Pips.HoldSound)
+            local soundAt = a.live and countSrc and count and Pips.SoundAt(a.proc)
+            if soundAt then
+                if count < soundAt then
+                    a.soundDone = nil
+                elseif not a.soundDone then
+                    a.soundDone = true
+                    ProcDoc_PlayAlertSound(a.proc)
+                end
+            end
             if Pips.Enabled(a.proc) then
                 if a.live then
                     stacks = countSrc and count
@@ -2039,6 +2130,17 @@ function Predict.Entry(id)
     end
 end
 
+-- The buff proc a buff on you is (`id`, `name`: nil when unreadable): by its
+-- spell number, else its name. A group's entry (Hunter "Aspects") gives way
+-- to one of its buffs the player added on its own by name, so Aspect of the
+-- Cheetah's buff goes to Cheetah's alert. A group's own buff numbers and names
+-- never take another's (RegisterProc), so this is the only place it matters.
+function Predict.BuffProc(id, name)
+    local proc = id ~= nil and buffBySpellID[id] or nil
+    if (proc == nil or proc.group) and name ~= nil then proc = buffByName[name] or proc end
+    return proc
+end
+
 -- Abilities of one class that share a cooldown: { seconds, spell numbers }.
 -- Only what is certain is listed: the three shocks (Forever's data says one
 -- 6 sec cooldown for all of them, and a player saw it). The data lists other
@@ -2127,11 +2229,13 @@ local function RegisterProc(proc, isAction)
         proc.gainSet    = proc.gainedBy and NameSet(proc.gainedBy) or nil
         Mirror.dirty = true
         for _, id in ipairs(proc.spellIDs or {}) do
-            buffBySpellID[id] = proc
+            -- (a group's entry, Hunter "Aspects", leaves a buff of it the
+            -- player added on its own to that one: CDM.Group)
+            if not (proc.group and buffBySpellID[id]) then buffBySpellID[id] = proc end
             if not proc.auto then
                 local n = GetSpellNameCompat(id)
                 if n then
-                    buffByName[n] = proc
+                    if not (proc.group and buffByName[n]) then buffByName[n] = proc end
                     proc.localBuffName = proc.localBuffName or n
                 end
             end
@@ -2240,7 +2344,8 @@ local function BuildClassProcs()
 end
 
 -- Track any buff as a proc: a spell ID (number or numeric text) or an exact
--- buff name. Returns the new proc, or nil and a message.
+-- buff name. Returns the new proc, or nil and a message (and, when it's in
+-- the list already, that proc: the options then switch it on and open it).
 local function AddCustomProc(input)
     if type(input) == "string" then input = input:match("^%s*(.-)%s*$") end
     if input == nil or input == "" then return nil, "Type a buff name or spell ID first." end
@@ -2248,9 +2353,12 @@ local function AddCustomProc(input)
     local name = id and GetSpellNameCompat(id) or (not id and input) or nil
     if not name then return nil, "No spell found with ID " .. tostring(input) .. "." end
     local entry = id and Predict.Entry(id)             -- (a built-in's talent or Cooldown Manager number)
-    if entry then return nil, name .. " is already in your list, as " .. entry.buffName .. "." end
-    if (id and buffBySpellID[id]) or buffByName[name] or actionByName[name] then
-        return nil, name .. " is already in your list."
+    if entry then return nil, name .. " is already in your list, as " .. entry.buffName .. ".", entry end
+    -- (a group's entry, Hunter "Aspects", doesn't count: each of its buffs can be added on its own)
+    local function Mine(p) return (p and not p.group) and p or nil end
+    local have = (id and Mine(buffBySpellID[id])) or Mine(buffByName[name]) or actionByName[name]
+    if have then
+        return nil, name .. " is already in your list.", have
     end
     local key = "CUSTOM:" .. (id and tostring(id) or name:lower())
     ProcDocDB.custom[playerClass] = ProcDocDB.custom[playerClass] or {}
@@ -2274,7 +2382,8 @@ local function CurrentBuffOptions()
     local function Offer(name, id, note)
         if seen[name] then return end
         seen[name] = true
-        if (id and buffBySpellID[id]) or buffByName[name] then return end
+        local function Tracked(p) return p and not p.group end    -- (a group's entry: Hunter "Aspects")
+        if (id and Tracked(buffBySpellID[id])) or Tracked(buffByName[name]) then return end
         out[#out + 1] = { value = id or name,
             label = name .. (id and ("  |cff777777" .. id .. "|r") or "") .. (note or "") }
     end
@@ -2544,9 +2653,7 @@ CheckProcs = function()
                 if Readable(spellId) then r.id = spellId end
                 r.t = now
             end
-            local proc
-            if Readable(spellId) then proc = buffBySpellID[spellId] end
-            if not proc and Readable(name) then proc = buffByName[name] end
+            local proc = Predict.BuffProc(Readable(spellId) and spellId or nil, Readable(name) and name or nil)
             if not proc and G.trace then
                 other[#other + 1] = string.format("%s#%s", Readable(name) and tostring(name) or "?",
                     Readable(spellId) and tostring(spellId) or "?")
@@ -2639,8 +2746,8 @@ local function HandleAuraUpdate(updateInfo)
         for _, aura in ipairs(added) do
             aura = Clean(aura)
             if type(aura) == "table" then
-                local proc = (Readable(aura.spellId) and buffBySpellID[aura.spellId])
-                    or (Readable(aura.name) and buffByName[aura.name])
+                local proc = Predict.BuffProc(Readable(aura.spellId) and aura.spellId or nil,
+                    Readable(aura.name) and aura.name or nil)
                 if proc then
                     Predict.MarkSeen(proc)
                     local info = MakeAuraInfo(proc, aura.applications, aura.duration,
@@ -2795,10 +2902,12 @@ function Remind.RefreshAll()
 end
 
 -- Your own recast of a reminder buff while buffs are hidden: count it as
--- back for as long as it lasted last time (the scan after combat corrects it)
+-- back for as long as it lasted last time (the scan after combat corrects it).
+-- In combat they're always hidden, even before the first scan says so (a
+-- totem dropped the moment a fight starts), as for Predict.Gain.
 function Remind.OnCast(castName)
     local proc = castName and buffByName[castName]
-    if not (proc and auraLocked and Remind.Is(proc)) then return end
+    if not (proc and (auraLocked or Remind.InCombat()) and Remind.Is(proc)) then return end
     local dur = proc.lastDuration or 600
     SetLive(proc, "aura", { exp = GetTime() + dur, dur = dur })
     Trace("%s recast while buffs are hidden: counted as back for %ds", proc.key, dur)
@@ -3544,34 +3653,64 @@ function CDM.CooldownID(f)
     if type(id) == "number" then return id end
 end
 
--- Every spell ID Blizzard ties to a Cooldown Manager entry
+-- Every spell ID Blizzard ties to a Cooldown Manager entry, and where each
+-- came from: "own" (the entry's spell), "linked" (its linked spells) or
+-- "frame" (asked of the icon itself)
 function CDM.SpellIDs(cooldownID, f)
-    local ids = {}
-    local function Add(v)
+    local ids, kinds = {}, {}
+    local function Add(v, kind)
         v = Clean(v)
-        if type(v) == "number" then ids[#ids + 1] = v end
+        if type(v) == "number" then
+            ids[#ids + 1] = v
+            kinds[v] = kinds[v] or kind
+        end
     end
     local info = Clean(SafeCall(C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo, cooldownID))
     if type(info) == "table" then
-        Add(info.spellID); Add(info.overrideSpellID); Add(info.overrideTooltipSpellID)
+        Add(info.spellID, "own"); Add(info.overrideSpellID, "own"); Add(info.overrideTooltipSpellID, "own")
         local linked = Clean(info.linkedSpellIDs)
         if type(linked) == "table" then
-            for _, v in ipairs(linked) do Add(v) end
+            for _, v in ipairs(linked) do Add(v, "linked") end
         end
     end
     if f then
         for _, m in ipairs({ "GetSpellID", "GetBaseSpellID", "GetAuraSpellID" }) do
-            if type(f[m]) == "function" then Add(SafeCall(f[m], f)) end
+            if type(f[m]) == "function" then Add(SafeCall(f[m], f), "frame") end
         end
     end
-    return ids
+    return ids, kinds
+end
+
+-- An entry that stands for several different buffs at once (Hunter
+-- "Aspects", Druid Forms, Stances, Seals): its linked spells name two or more
+-- buffs besides its own spell. Its icon lights for whichever is on, so it
+-- can't say which: a group, never taken for one of its buffs. (One other
+-- buff is a pair, not a group: a totem and its aura, Arcane Intellect and
+-- Arcane Brilliance, a talent and the buff it gives.)
+function CDM.Group(ids, kinds)
+    local own, others, n = {}, {}, 0
+    for _, id in ipairs(ids) do
+        if kinds[id] == "own" then
+            local name = GetSpellNameCompat(id)
+            if name then own[name] = true end
+        end
+    end
+    for _, id in ipairs(ids) do
+        local name = kinds[id] == "linked" and GetSpellNameCompat(id)
+        if name and not own[name] and not others[name] then
+            others[name] = true
+            n = n + 1
+        end
+    end
+    return n >= 2
 end
 
 function CDM.ProcFor(cooldownID, f)
     if not cooldownID then return nil end
     local cached = CDM.byID[cooldownID]
     if cached ~= nil then return cached or nil end
-    local ids = CDM.SpellIDs(cooldownID, f)
+    local ids, kinds = CDM.SpellIDs(cooldownID, f)
+    local group = CDM.Group(ids, kinds)
     local proc
     for _, id in ipairs(ids) do
         -- a built-in's own entry first (its talent or Cooldown Manager number),
@@ -3580,6 +3719,13 @@ function CDM.ProcFor(cooldownID, f)
         if not proc then
             local n = GetSpellNameCompat(id)
             proc = n and (buffByName[n] or nil)
+        end
+        -- a group's icon (Hunter "Aspects") is its own entry's or a built-in's,
+        -- never that of one of its buffs the player added on its own: in
+        -- combat it would light for the others too (Cheetah's alert in Hawk)
+        if proc and group and kinds[id] ~= "own" and not proc.group
+            and (proc.custom or proc.cdm or proc.auto) then
+            proc = nil
         end
         if proc then break end
     end
@@ -4217,13 +4363,16 @@ end
 --              available (usable)
 -- The Essential and Utility rows are abilities with cooldowns. A buff-list
 -- spell that lands on your target (Rupture, Garrote, Sap...) is never a
--- buff you have, so it's an ability too, unless it's a passive talent effect.
+-- buff you have, so it's an ability too, unless it's a passive talent effect
+-- or one you can cast on a friend (Power Word: Shield, Renew: the game says
+-- it isn't only on you, but it's a buff on you when you cast it on yourself).
 function CDM.DefaultKind(cid, spellID, fromCooldownRow)
     local ability = fromCooldownRow
     if not ability then
         local info = Clean(SafeCall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cid))
         local passive = Clean(SafeCall(C_Spell and C_Spell.IsSpellPassive, spellID))
-        ability = type(info) == "table" and Clean(info.selfAura) == false and passive ~= true
+        local friendly = Clean(SafeCall(C_Spell and C_Spell.IsSpellHelpful, spellID))
+        ability = type(info) == "table" and Clean(info.selfAura) == false and passive ~= true and friendly ~= true
     end
     if not ability then return "up" end
     local base = Clean(SafeCall(_G.GetSpellBaseCooldown, spellID))
@@ -4246,11 +4395,13 @@ function CDM.CatalogEntries()
         if type(ids) == "table" then
             for _, cid in ipairs(ids) do
                 cid = Clean(cid)
-                local spellIDs = cid and CDM.SpellIDs(cid) or {}
+                local spellIDs, kinds = {}, {}
+                if cid then spellIDs, kinds = CDM.SpellIDs(cid) end
                 local name = spellIDs[1] and GetSpellNameCompat(spellIDs[1])
                 if name then
                     out[#out + 1] = { id = spellIDs[1], ids = spellIDs, name = name,
-                                      kind = CDM.DefaultKind(cid, spellIDs[1], spec[2]) }
+                                      kind = CDM.DefaultKind(cid, spellIDs[1], spec[2]), kinds = kinds,
+                                      group = (not spec[2] and CDM.Group(spellIDs, kinds)) or nil }
                 end
             end
         end
@@ -4265,8 +4416,12 @@ SyncCatalog = function()
         local key = "CDM:" .. e.id
         local taken = procByKey[key] or buffByName[e.name] or actionByName[e.name]
         for _, sid in ipairs(e.ids) do
+            local p = buffBySpellID[sid]
+            -- (a group's entry, Hunter "Aspects", isn't kept out by one of its
+            -- buffs the player added on its own: Aspect of the Cheetah)
+            if p and e.group and e.kinds[sid] ~= "own" and (p.custom or p.auto) then p = nil end
             -- (a built-in's talent or Cooldown Manager number: Nightfall is Shadow Trance)
-            taken = taken or buffBySpellID[sid] or Predict.Entry(sid)
+            taken = taken or p or Predict.Entry(sid)
         end
         if not taken then
             local proc = { key = key, buffName = e.name, alertTexturePath = DEFAULT_ALERT_TEXTURE,
@@ -4276,7 +4431,7 @@ SyncCatalog = function()
             if ability then
                 proc.spellName, proc.spellID, proc.cdOnly = e.name, e.id, kind == "cooldown" or nil
             else
-                proc.spellIDs = e.ids
+                proc.spellIDs, proc.group = e.ids, e.group
             end
             RegisterProc(proc, ability)
             added = added + 1
@@ -4817,13 +4972,13 @@ function Mirror.Spec(proc)
                 lr = lr, lg = lg, lb = lb, low = G.timerLowThreshold or 3, decimals = G.timerDecimals ~= false })
         end
         if dots >= 2 and not (i == 2 and s.pipOneSide) then
-            local gap = pipSize * 0.35
-            local total = dots * pipSize + (dots - 1) * gap
             local cx, cy = px + (s.pipX or 0) * bw * side, y + (s.pipY or -0.6) * bh
+            local layout, bow, tex = s.pipLayout or "row", Pips.Bow(s, side, px), Pips.Tex(proc)   -- (as Pips.Draw lays them out)
             for k = 1, dots do
-                local dx = cx - total / 2 + pipSize / 2 + (k - 1) * (pipSize + gap)
-                Add("dot", From(first), { x = dx, y = cy, w = pipSize, h = pipSize, r = 0.5, g = 0.5, b = 0.55, a = 0.35 * alpha })
-                Add("dot", From(math.max(k, first)), { x = dx, y = cy, w = pipSize, h = pipSize, r = pr, g = pg, b = pb, a = alpha, lit = true })
+                local ox, oy = Pips.Offset(layout, k, dots, pipSize, bow)
+                local dx, dy = cx + ox, cy + oy
+                Add("dot", From(first), { img = tex, x = dx, y = dy, w = pipSize, h = pipSize, r = 0.5, g = 0.5, b = 0.55, a = 0.35 * alpha })
+                Add("dot", From(math.max(k, first)), { img = tex, x = dx, y = dy, w = pipSize, h = pipSize, r = pr, g = pg, b = pb, a = alpha, lit = true })
             end
         end
     end
@@ -4922,9 +5077,9 @@ function Mirror.Dot(layer, e)
     local d = layer.dots[layer.nDots]
     if not d then
         d = layer.dotFrame:CreateTexture(nil, e.lit and "OVERLAY" or "ARTWORK")
-        d:SetTexture(Pips.TEX)
         layer.dots[layer.nDots] = d
     end
+    d:SetTexture(e.img or Pips.TEX)                           -- (the proc's dot shape)
     d:SetDrawLayer(e.lit and "OVERLAY" or "ARTWORK")
     d:ClearAllPoints()
     d:SetPoint("CENTER", ProcDoc, "CENTER", e.x, e.y)
@@ -6474,9 +6629,22 @@ local function RebuildProcList()
         local tip = Label(add, "Track any buff or ability: type its exact name or\nspell ID, or pick a buff you have. On its page, pick\nwhen it alerts: shows up, goes missing, or ready to use.")
         tip:SetPoint("TOPLEFT", 0, -22)
         tip:SetJustifyH("LEFT")
-        local function Added(proc, err)
+        local function Added(proc, err, have)
             if not proc then
-                Print(err)
+                -- in the list already (a buff the Cooldown Manager lists, say): switched on and
+                -- opened, instead of a dead end
+                if have and procByKey[have.key] == have then
+                    local was = IsProcEnabled(have)
+                    SetProcEnabled(have, true)
+                    local ability = have.isAction and (have.custom or have.cdm)
+                    Print(err .. ((not was and IsProcEnabled(have)) and " Switched it on." or "") .. (ability and (" It follows the spell itself: to follow "
+                        .. "its buff instead, pick \"It shows up\" under Alert me when.") or ""))
+                    ReevaluateAll()
+                    SelectView("PROC", have.key)
+                    PreviewAfterChange(have)
+                else
+                    Print(err)
+                end
                 return
             end
             Print("added |cffffd100" .. proc.buffName .. "|r. Drag it on screen to place it.")
@@ -6490,9 +6658,9 @@ local function RebuildProcList()
         edit:SetAutoFocus(false)
         local function Submit()
             edit:ClearFocus()
-            local proc, err = AddCustomProc(edit:GetText())
-            if proc then edit:SetText("") end
-            Added(proc, err)
+            local proc, err, have = AddCustomProc(edit:GetText())
+            if proc or have then edit:SetText("") end
+            Added(proc, err, have)
         end
         edit:SetScript("OnEnterPressed", Submit)
         edit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -6959,6 +7127,14 @@ function ProcUI.Stacks(page, st, child)
             PSW(pageProc.key).minStacks = (v > 1) and v or nil
             if CheckProcs then CheckProcs() end
         end, COL), 38)
+    st:Add(CreateSlider(child, "Play the sound at (stacks)", 1, 20, 1,
+        function(v) v = math.floor(v + 0.5); return v <= 1 and "when it shows" or tostring(v) end,
+        function() return pageProc and (PS(pageProc.key).soundStacks or pageProc.soundStacks) or 1 end,
+        function(v)
+            if not pageProc then return end
+            v = math.floor(v + 0.5)
+            if v == (pageProc.soundStacks or 1) then PSW(pageProc.key).soundStacks = nil else PSW(pageProc.key).soundStacks = v end
+        end, COL), 38)
     st:Add(CreateSlider(child, "Number of dots (0 = most stacks seen)", 0, 20, 1,
         function(v) v = math.floor(v + 0.5); return v == 0 and ("auto" .. ((pageProc and pageProc.maxSeen) and (" (" .. pageProc.maxSeen .. ")") or "")) or tostring(v) end,
         function() return pageProc and PS(pageProc.key).maxStacks or 0 end,
@@ -6978,6 +7154,35 @@ function ProcUI.Stacks(page, st, child)
         function(v)
             if not pageProc then return end
             PSW(pageProc.key).pipColor = (v ~= "gold") and v or nil
+            ProcUI.Changed()
+        end), 22, nil, 10)
+    -- (each shape shown in the menu as it looks, in gold)
+    st:Add(Label(child, "Dot shape"), 12, nil, 4)
+    st:Add(CreateDropdown(child, COL, function()
+            local out = {}
+            for _, sh in ipairs(Pips.SHAPES) do
+                local px = sh.file and 64 or 32
+                out[#out + 1] = { value = sh.value, label = string.format("|T%s:14:14:0:0:%d:%d:0:%d:0:%d:255:210:60|t %s",
+                    Pips.ShapeTex(sh.value), px, px, px, px, sh.label) }
+            end
+            return out
+        end,
+        function() return pageProc and PS(pageProc.key).pipShape or "round" end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).pipShape = (v ~= "round") and v or nil
+            ProcUI.Changed()
+        end), 22, nil, 10)
+    st:Add(Label(child, "Dot layout"), 12, nil, 4)
+    st:Add(CreateDropdown(child, COL, function()
+            local out = {}
+            for _, l in ipairs(Pips.LAYOUTS) do out[#out + 1] = { value = l.value, label = l.label } end
+            return out
+        end,
+        function() return pageProc and PS(pageProc.key).pipLayout or "row" end,
+        function(v)
+            if not pageProc then return end
+            PSW(pageProc.key).pipLayout = (v ~= "row") and v or nil
             ProcUI.Changed()
         end), 22, nil, 10)
     st:Add(CreateCheck(child, "One side per stack (for pairs)",
@@ -7009,6 +7214,7 @@ function ProcUI.Stacks(page, st, child)
         if not pageProc then return end
         local ps = PSW(pageProc.key)
         ps.pipX, ps.pipY, ps.pipSize, ps.pipColor, ps.pipOneSide = nil, nil, nil, nil, nil
+        ps.pipShape, ps.pipLayout = nil, nil
         ProcUI.Refresh()
         ProcUI.Changed()
     end)
@@ -8246,7 +8452,7 @@ local function PrintBuffs()
             local n = Readable(name) and name or "<hidden>"
             local id = Readable(spellId) and tostring(spellId) or "?"
             local c = Readable(count) and tostring(count) or "?"
-            local proc = (Readable(spellId) and buffBySpellID[spellId]) or (Readable(name) and buffByName[name])
+            local proc = Predict.BuffProc(Readable(spellId) and spellId or nil, Readable(name) and name or nil)
             DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s - %s - %s%s", n, id, c, proc and "  |cff00ff96(tracked)|r" or ""))
         end
     end
