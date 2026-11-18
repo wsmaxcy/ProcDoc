@@ -4803,6 +4803,8 @@ function CDM.Check()
             if proc.isAction then
                 how = (proc.custom or proc.cdm) and "from its cooldown (your own ability)"
                     or "lights up when the game says you can use it"
+            elseif watched[proc.key] and Mirror.Covers(proc) and Mirror.Sides(proc) then
+                how = "drawn by the game itself (it knows your stacks), with its sound from its Cooldown Manager icon"
             elseif watched[proc.key] then
                 how = "seen (its Cooldown Manager icon)"
             elseif proc.castSignal then
@@ -4913,6 +4915,17 @@ end
 function Mirror.Wants(proc)
     return (not G.noMirror and not proc.isAction and not proc.noMirror and not proc.castSignal
         and IsProcEnabled(proc) and not Remind.Is(proc) and not PS(proc.key).oocOnly) and true or false
+end
+
+-- A pair that shows one side per stack (Fingers of Frost) is drawn by the game
+-- in every fight, even with a Cooldown Manager icon watching it. In combat the
+-- game hides the stack count: ProcDoc sees your cast spend a charge, but
+-- nothing tells it when a new proc fills them up again, so its own alert
+-- stayed on one side. The game's copy follows the real stacks (the second
+-- side shows from 2), and the icon still gives the sound when it lights up.
+function Mirror.Sides(proc)
+    local _, _, both = ProcPlacement(proc)
+    return (both and Pips.SidesByStacks(proc)) and true or false
 end
 
 -- Is there a working copy of it (so it's seen mid-fight with nothing to set up)?
@@ -5266,9 +5279,10 @@ end
 function Mirror.Combat(inCombat)
     if not Mirror.box then return end
     for key, set in pairs(Mirror.sets) do
-        -- (one with a Cooldown Manager icon is ProcDoc's own in combat, sound and all)
+        -- (one with a Cooldown Manager icon is ProcDoc's own in combat, sound and all,
+        -- unless only the game can tell its stacks: Mirror.Sides)
         local on = (inCombat and set.ready and Mirror.Wants(set.proc)
-            and not (Predict.IsWatched and Predict.IsWatched(set.proc))) and true or false
+            and (Mirror.Sides(set.proc) or not (Predict.IsWatched and Predict.IsWatched(set.proc)))) and true or false
         local took = Mirror.Switch(set, on)
         local was = set.on
         set.on = on and took
