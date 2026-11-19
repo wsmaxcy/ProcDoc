@@ -2704,6 +2704,8 @@ CheckProcs = function()
     for _, proc in ipairs(buffProcs) do
         if found[proc.key] then
             if auraLocked then proc.seenWhileLocked = true end
+            -- (it shows what your last cast gave: nothing left for Predict.GainUnseen)
+            if proc.gainWant and (found[proc.key].charges or 0) >= proc.gainWant then proc.gainWant = nil end
             SetLive(proc, "aura", found[proc.key])
         elseif not auraLocked or (proc.seenWhileLocked and readable > 0) then
             -- readable scan (or a partial lock that has shown this proc
@@ -2714,6 +2716,7 @@ CheckProcs = function()
             CheckHiddenProc(proc, now)
         end
     end
+    if auraLocked then Predict.GainUnseen() end
     if G.trace then
         local names = {}
         for key in pairs(found) do names[#names + 1] = key end
@@ -2868,6 +2871,7 @@ function Predict.Gain(castName)
                     if gain and proc.charges then
                         src.charges = math.min(proc.charges, (src.charges or 0) + gain)
                         if src.stacks then src.stacks = src.charges end
+                        src.gainAt = now                -- (its icon still shows the old count a moment: CDM.Poll)
                     end
                     SetLive(proc, name, src)
                 end
@@ -2875,6 +2879,14 @@ function Predict.Gain(castName)
             if any then
                 Trace("%s %s by your %s", proc.key, gain and "gained charges" or "renewed", castName)
             elseif gain then
+                -- Buffs still readable: the buff check sees what this cast gives.
+                -- Unless the game hides them first (the cast that starts the
+                -- fight): what it should see is kept for that (Predict.GainUnseen).
+                if not hidden and proc.charges then
+                    local cur = a and a.sources.aura
+                    local base = (cur and not (proc.fixedTime and cur.exp and now >= cur.exp)) and (cur.charges or 0) or 0
+                    proc.gainWant = math.min(proc.charges, base + gain)
+                end
                 proc.gainAt, proc.gainN = now, gain
                 -- A `fixedTime` buff your own cast always gives (Arcane Blast)
                 -- needs no one to see it: the cast says it's up, and for how
@@ -2890,6 +2902,39 @@ function Predict.Gain(castName)
     end
 end
 Predict.GAIN_SOURCES = { "aura", "cdm" }
+
+-- The cast that starts a fight: it went out while your buffs could still be
+-- read, but the game hid them before the buff check saw what it gave (Arcane
+-- Blast's first stack lands as the fight starts: it showed nothing at 1 stack
+-- and one short after). Counted now, as a cast in the fight is. Runs as the
+-- buffs go hidden (the fight starting, or the first hidden buff check).
+Predict.UNSEEN_FOR = 2
+function Predict.GainUnseen()
+    local now = GetTime()
+    for _, proc in ipairs(buffProcs) do
+        local want = proc.gainWant
+        proc.gainWant = nil
+        if want and proc.gainAt and now - proc.gainAt < Predict.UNSEEN_FOR and IsProcEnabled(proc) and not Remind.Is(proc) then
+            local a = alerts[proc.key]
+            local cur = a and a.sources.aura
+            local dur = proc.lastDuration or proc.baseDuration
+            -- (with nothing seen yet and an icon watching it, the icon lights with
+            -- what this cast gave: CDM.Poll's gainN)
+            if cur and not (proc.fixedTime and cur.exp and now >= cur.exp) then
+                if (cur.charges or 0) < want then
+                    cur.charges = want
+                    if cur.stacks then cur.stacks = want end
+                    if not proc.fixedTime and dur then cur.exp, cur.dur = proc.gainAt + dur, dur end
+                    SetLive(proc, "aura", cur)
+                    Trace("%s: your cast just before the fight gave it %d (the game hid it first)", proc.key, want)
+                end
+            elseif proc.fixedTime and dur and not (Predict.IsWatched and Predict.IsWatched(proc)) then
+                SetLive(proc, "aura", { exp = proc.gainAt + dur, dur = dur, charges = want, stacks = want })
+                Trace("%s is up: your cast just before the fight gave it %d (the game hid it first)", proc.key, want)
+            end
+        end
+    end
+end
 
 -- Reminders: re-check every one (combat, death and zoning change whether
 -- they should show). Also updates alerts switched back to normal procs.
@@ -3565,6 +3610,7 @@ actionFrame:SetScript("OnEvent", GuardedHandler(function(self, event, arg1, arg2
     elseif event == "PLAYER_REGEN_DISABLED" then
         Trace("entered combat")
         Remind.inCombat = true
+        Predict.GainUnseen()                   -- (the cast that started it: what it gave, if the buff check never saw it)
         Mirror.Combat(true)                    -- buffs are hidden now: the game draws those it can
         for _, st in pairs(actionState) do st.flagOn, st.offSince, st.flagSince = nil, nil, nil end    -- (the cooldown flag is read afresh)
         Remind.CombatChanged()                 -- "Only in combat" alerts can show now
@@ -3625,6 +3671,7 @@ local CDM = {
     origParent = {},                         -- viewer name -> its parent before "Hide its icons"
     mouseOff = setmetatable({}, { __mode = "k" }),  -- icons whose tooltips we switched off
     GONE_DELAY = 0.5,
+    STACK_LAG = 1,                           -- how long after your cast its icon can still show the old count
     SURE     = { IsActive = true, isActive = true, ["aura gone"] = true },  -- trusted "not active" answers
     elapsed  = 0,
     wiped    = 0,
@@ -4025,9 +4072,15 @@ function CDM.Poll()
             Trace("%s is up in the Cooldown Manager (%s)", key, how[key])
         end
         -- the icon's own count when the game shows it (a hidden one is nil:
-        -- then the charges ProcDoc counts are shown); the alert reads this table
-        info.stacks = stacks[key]
-        if stacks[key] and proc.charges then info.charges = stacks[key] end
+        -- then the charges ProcDoc counts are shown); the alert reads this table.
+        -- The icon redraws its count a moment after your cast, so a lower count
+        -- just after ProcDoc counted a stack from that cast is the old one. (Arcane
+        -- Blast showed a stack short: Blizzard writes a blank count at 1 stack,
+        -- which can be read in a fight, and hides the count from 2.)
+        local n = stacks[key]
+        if n and info.gainAt and now - info.gainAt < CDM.STACK_LAG and n < (info.charges or 0) then n = nil end
+        info.stacks = n
+        if n and proc.charges then info.charges = n end
         if info.stacks and info.stacks > (proc.maxSeen or 0) then proc.maxSeen = info.stacks end
     end
     for key in pairs(CDM.live) do
