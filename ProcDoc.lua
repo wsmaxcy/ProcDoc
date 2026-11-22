@@ -2205,7 +2205,11 @@ local function RegisterProc(proc, isAction)
         local seen = ProcDocDB.stackMax and ProcDocDB.stackMax[playerClass]
         proc.maxSeen = seen and seen[proc.key] or proc.maxSeen
         local durs = ProcDocDB.durations and ProcDocDB.durations[playerClass]
-        proc.lastDuration = proc.lastDuration or (durs and durs[proc.key]) or proc.baseDuration
+        if proc.fixedTime and proc.baseDuration then
+            proc.lastDuration = proc.baseDuration
+        else
+            proc.lastDuration = proc.lastDuration or (durs and durs[proc.key]) or proc.baseDuration
+        end
         for id in pairs(proc.learnedIDs or {}) do
             if not buffBySpellID[id] then buffBySpellID[id] = proc end
             local n = not proc.auto and GetSpellNameCompat(id)
@@ -2501,12 +2505,14 @@ local function MakeAuraInfo(proc, count, duration, expirationTime, instanceID, n
     end
     if Readable(duration) and Readable(expirationTime) and duration > 0 and expirationTime > now then
         info.exp, info.dur = expirationTime, duration
-        -- kept for good: in combat the game hides it, and the countdown of a
-        -- proc seen only through the Cooldown Manager starts from this
-        proc.lastDuration = duration
-        local byClass = ProcDocDB.durations[playerClass] or {}
-        ProcDocDB.durations[playerClass] = byClass
-        byClass[proc.key] = duration
+        -- A reading from a later stack describes the current fixed window.
+        -- Keep its real expiration above and use the base duration for new windows.
+        if not (proc.fixedTime and proc.baseDuration) then
+            proc.lastDuration = duration
+            local byClass = ProcDocDB.durations[playerClass] or {}
+            ProcDocDB.durations[playerClass] = byClass
+            byClass[proc.key] = duration
+        end
     end
     if Readable(instanceID) then
         info.inst = instanceID
