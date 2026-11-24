@@ -68,6 +68,8 @@ local function ProcDoc_EnsureDB()
     ProcDocDB.cdmOffTold          = ProcDocDB.cdmOffTold or {}            -- ["Name-Realm"] = true once told the Cooldown Manager is off
     ProcDocDB.cdmAutoOn           = ProcDocDB.cdmAutoOn or {}             -- ["Name-Realm"] = true once told ProcDoc switched it on there
     ProcDocDB.cdmSetup            = ProcDocDB.cdmSetup or {}              -- ["Name-Realm"] = what the Cooldown Manager setup did (CDM.Record)
+    ProcDocDB.cdmKeys             = ProcDocDB.cdmKeys or {}               -- [class][cooldownID] = the key its settings are under (CDM.KeyFor)
+    ProcDocDB.signalOK            = ProcDocDB.signalOK or {}              -- [class][procKey] = true once its `castSignal` was seen to follow its stacks
 end
 
 local function ProcDoc_LoadGlobalsFromDB()
@@ -422,6 +424,10 @@ local PROC_DATA = {
             charges          = 4,
             dotSlots         = 4,
             gainedBy         = { ["Arcane Blast"] = 1 },   -- (the game hides the count in combat: your casts are counted)
+            -- ...and each stack adds 100% to Arcane Blast's own mana cost, which a
+            -- fight leaves readable: the real count, and the moment it's gone, however
+            -- it ends (Signal). Used once seen to hold out of combat (`verify`).
+            castSignal       = { spell = 400574, perStack = -1, maxStacks = 4, verify = true },
             noMirror         = true,             -- (its aura is flagged as a debuff: the game can't draw it, section 9b)
             selfDebuff       = true,             -- ...and the buff scan looks in your debuffs for it (CheckProcs)
         },
@@ -444,6 +450,7 @@ local PROC_DATA = {
             alertTexturePath = IMG .. "FireBand.tga",
             alertStyle       = "BOTTOM",
             dotSlots         = 3,                -- stack dots underneath
+            gameStacks       = true,             -- (its stacks come from crits: drawn by the game in a fight, Mirror.OnlyGameKnows)
             consumedBy       = { "Pyroblast" },
         },
         {
@@ -604,6 +611,23 @@ local PROC_DATA = {
     },
 }
 
+-- Revelation, the weapon enchant (players asked for it): when a non-periodic
+-- spell doesn't crit, a chance that your next one has more crit, for 15 sec.
+-- Any class that casts spells can have it. Its buff comes in one number per
+-- strength, and no Cooldown Manager list has it, so in a fight the game draws
+-- it (section 9b); adding it by hand rarely got the right number.
+for _, cls in ipairs({ "MAGE", "WARLOCK", "PRIEST", "DRUID", "SHAMAN", "PALADIN" }) do
+    local list = PROC_DATA[cls]
+    list[#list + 1] = {
+        buffName         = "Revelation",
+        spellIDs         = { 1248808, 1323377, 1323392, 1323400, 1323410, 1323418, 1323419 },
+        baseDuration     = 15,
+        alertTexturePath = IMG .. "GoldenSunArc.tga",
+        alertStyle       = "RIGHT",
+        consumedBy       = "ANY",
+    }
+end
+
 -- The spells named in `consumedBy`, `sparedBy` and `gainedBy`, by ID, so a
 -- cast matches in every client language (the cast event gives the game's own
 -- name for the spell).
@@ -636,6 +660,7 @@ local ACTION_PROCS = {
             spellID          = 7384,
             reactOn          = { target = { DODGE = true } },
             stanceSwap       = true,              -- can also alert in Berserker/Defensive Stance (the player's choice)
+            windowBuff       = 1289681,           -- ...there also while Bloodthrill's buff says it's ready (talent 1289682)
             cooldown         = 5,
             alertTexturePath = IMG .. "GlowingEyes.tga",
             alertStyle       = "TOP",
@@ -889,7 +914,7 @@ function Remind.WantLive(a)
     if ps.combatOnly and not Remind.InCombat() then return false end   -- "Only in combat"
     if ps.oocOnly and Remind.InCombat() then return false end          -- "Only out of combat"
     local any = next(a.sources) ~= nil
-    if not Remind.Is(a.proc) then return any end
+    if not Remind.Is(a.proc) then return any and not (Remind.Below and Remind.Below(a)) end
     return (not any) and Remind.ConditionOK()
 end
 
@@ -1157,6 +1182,18 @@ function Pips.Count(a)
     end
     local src = a.sources.aura or a.sources.cdm
     return src and src.charges, nil
+end
+
+-- "Show the alert at (stacks)": with fewer, its alert stays hidden. Out of
+-- combat the buff check leaves such a buff out (MakeAuraInfo); in a fight the
+-- count comes from elsewhere (Maelstrom Weapon's from Lightning Bolt) and
+-- wasn't checked, so it showed from the first stack. A count nobody can read
+-- shows the alert, as before.
+function Remind.Below(a)
+    local need = PS(a.proc.key).minStacks or a.proc.minStacks
+    if not (need and need > 1) then return false end
+    local n = Pips.Count(a)
+    return (n ~= nil and n < need) and true or false
 end
 
 -- "One side per stack" (pairs): the second side shows only at 2+ stacks
@@ -2854,6 +2891,7 @@ function Predict.Gain(castName)
         local gain = proc.gainSet and proc.gainSet[castName]
         local renew = gain or castName == proc.buffName or castName == proc.localBuffName
         if renew and not Remind.Is(proc) and IsProcEnabled(proc) then
+            if gain then proc.lastGain = now end                 -- (Signal.Poll: its cost shows it a moment later)
             local a = alerts[proc.key]
             local any = false
             for _, name in ipairs(Predict.GAIN_SOURCES) do
@@ -3336,6 +3374,13 @@ local function IsActionProcReady(proc)
     if usable == false and proc.stanceSwap and PS(proc.key).anyStance and (st.reactUntil or 0) > now
         and (now - (st.lastCast or -1000)) >= (proc.cooldown or 0) then
         usable, how = true, how .. ", dodge window (any stance)"
+    end
+    -- ...and while a buff says it's ready (`windowBuff`: Bloodthrill, the talent that
+    -- readies Overpower off your hits on a target with your Rend). That one is on
+    -- you, so it's exact; in a fight its Cooldown Manager icon tells (Predict.BuffOn).
+    if usable == false and proc.stanceSwap and proc.windowBuff and PS(proc.key).anyStance
+        and Predict.BuffOn and Predict.BuffOn(proc.windowBuff) then
+        usable, how = true, how .. ", " .. (GetSpellNameCompat(proc.windowBuff) or "its buff") .. " (any stance)"
     end
     if usable == nil then
         usable = (st.reactUntil or 0) > now and (now - (st.lastCast or -1000)) >= (proc.cooldown or 0)
@@ -4079,9 +4124,11 @@ function CDM.Poll()
         -- which can be read in a fight, and hides the count from 2.)
         local n = stacks[key]
         if n and info.gainAt and now - info.gainAt < CDM.STACK_LAG and n < (info.charges or 0) then n = nil end
+        local was = info.stacks
         info.stacks = n
         if n and proc.charges then info.charges = n end
         if info.stacks and info.stacks > (proc.maxSeen or 0) then proc.maxSeen = info.stacks end
+        if n ~= was and alerts[key] then Remind.UpdateLive(alerts[key], "cdm") end   -- ("Show the alert at": Remind.Below)
     end
     for key in pairs(CDM.live) do
         if not want[key] then
@@ -4408,6 +4455,29 @@ Predict.IsWatched = function(proc)
     return false
 end
 
+-- Is this buff on you? Asked directly when the game allows it, else told by a
+-- Cooldown Manager icon that lights with it (Bloodthrill's, in a fight); nil
+-- when nothing can tell. (Each row's buff numbers are kept: they never change.)
+Predict.BuffOn = function(id)
+    local ok, aura = LookupPlayerAuraBySpellID(id)
+    if ok then return aura ~= nil end
+    CDM.buffRow = CDM.buffRow or {}
+    for _, f in ipairs(CDM.Items()) do
+        local cid = CDM.CooldownID(f)
+        local has = cid and CDM.buffRow[cid]
+        if cid and not has then
+            has = {}
+            for _, sid in ipairs((CDM.SpellIDs(cid, f))) do has[sid] = true end
+            if next(has) then CDM.buffRow[cid] = has end         -- (none yet: asked again next time)
+        end
+        if has and has[id] then
+            local on = CDM.Active(f)
+            if on ~= nil then return on end
+        end
+    end
+    return nil
+end
+
 -- What a listed spell's alert follows unless the player picks otherwise:
 --   "up"       a buff on you: lights up while you have it
 --   "cooldown" an ability with a cooldown (Kick): shows while it's on
@@ -4452,7 +4522,7 @@ function CDM.CatalogEntries()
                 if cid then spellIDs, kinds = CDM.SpellIDs(cid) end
                 local name = spellIDs[1] and GetSpellNameCompat(spellIDs[1])
                 if name then
-                    out[#out + 1] = { id = spellIDs[1], ids = spellIDs, name = name,
+                    out[#out + 1] = { id = spellIDs[1], ids = spellIDs, name = name, cid = cid,
                                       kind = CDM.DefaultKind(cid, spellIDs[1], spec[2]), kinds = kinds,
                                       group = (not spec[2] and CDM.Group(spellIDs, kinds)) or nil }
                 end
@@ -4462,12 +4532,52 @@ function CDM.CatalogEntries()
     return out
 end
 
+-- The key a listed spell's settings are kept under: "CDM:" and the spell's
+-- number when its Cooldown Manager row was first listed, kept from then on.
+-- (The game gives the number of the rank you know: learning a new rank of
+-- Battle Shout, Execute or Kick, or playing another character of the class at
+-- another level, gave it a new key, and its settings looked reset.) The first
+-- time, settings already split over several ranks are joined: what was set
+-- under the newer key stays, and what only an older one had comes back.
+-- `current`: every row's own number right now (never taken for another's).
+function CDM.KeyFor(e, current)
+    local keys = ProcDocDB.cdmKeys[playerClass] or {}
+    ProcDocDB.cdmKeys[playerClass] = keys
+    if keys[e.cid] then return keys[e.cid] end
+    local key = "CDM:" .. e.id
+    local all, owned, old = ClassSettings(), {}, {}
+    for _, k in pairs(keys) do owned[k] = true end
+    for k, s in pairs(all) do
+        local n = type(k) == "string" and type(s) == "table" and tonumber(k:match("^CDM:(%d+)$"))
+        if n and n ~= e.id and not current[n] and not owned[k] and GetSpellNameCompat(n) == e.name then
+            old[#old + 1] = n
+        end
+    end
+    table.sort(old, function(x, y) return x > y end)               -- (higher ranks first: set more recently)
+    for _, n in ipairs(old) do
+        local from = "CDM:" .. n
+        local into = all[key] or {}
+        for f, v in pairs(all[from]) do
+            if into[f] == nil then into[f] = v end
+        end
+        all[key] = into
+        for _, t in ipairs({ ProcDocDB.durations, ProcDocDB.seen, ProcDocDB.stackMax }) do
+            local c = t[playerClass]
+            if c and c[key] == nil then c[key] = c[from] end
+        end
+    end
+    if #old > 0 then Trace("%s: its settings from %d other rank(s) joined", key, #old) end
+    keys[e.cid] = key
+    return key
+end
+
 SyncCatalog = function()
     if not initialized then return end
     local added = 0
-    for _, e in ipairs(CDM.CatalogEntries()) do
-        local key = "CDM:" .. e.id
-        local taken = procByKey[key] or buffByName[e.name] or actionByName[e.name]
+    local entries, current = CDM.CatalogEntries(), {}
+    for _, e in ipairs(entries) do current[e.id] = true end
+    for _, e in ipairs(entries) do
+        local taken = buffByName[e.name] or actionByName[e.name]
         for _, sid in ipairs(e.ids) do
             local p = buffBySpellID[sid]
             -- (a group's entry, Hunter "Aspects", isn't kept out by one of its
@@ -4476,7 +4586,8 @@ SyncCatalog = function()
             -- (a built-in's talent or Cooldown Manager number: Nightfall is Shadow Trance)
             taken = taken or p or Predict.Entry(sid)
         end
-        if not taken then
+        local key = not taken and CDM.KeyFor(e, current)
+        if key and not procByKey[key] then
             local proc = { key = key, buffName = e.name, alertTexturePath = DEFAULT_ALERT_TEXTURE,
                            alertStyle = "TOP", cdm = true, defaultOff = true }
             local kind = PS(key).kind or e.kind                       -- the player's pick, else the default
@@ -4700,6 +4811,16 @@ end
 -- more starts its countdown over, and none left means it's gone.
 local Signal = { base = {}, live = {} }
 
+-- Can this proc's stacks be read from its spell in a fight? (One with `verify`
+-- only once its cost was seen to follow the stacks: Signal.Read.)
+function Signal.Usable(proc)
+    local sig = proc.castSignal
+    if not sig then return false end
+    if not sig.verify then return true end
+    local seen = ProcDocDB.signalOK[playerClass]
+    return (seen and seen[proc.key]) and true or false
+end
+
 function Signal.ManaCost(id)
     local costs = Clean(SafeCall(C_Spell and C_Spell.GetSpellPowerCost, id))
     if type(costs) ~= "table" then return nil end
@@ -4733,16 +4854,43 @@ function Signal.Read(proc, sig)
             b.cost, b.sure = cost / (1 - sig.perStack * n), true
             if n == 0 then b.ct = ct end
         end
+        -- `verify` (Arcane Blast): read in a fight only once its cost has been
+        -- seen to follow the stacks here, where both can be read (kept for good)
+        if sig.verify and cost > 0 then
+            if n == 0 then
+                b.zero = cost
+            elseif b.zero and math.abs(cost - b.zero * (1 - sig.perStack * n)) <= 0.03 * cost then
+                local seen = ProcDocDB.signalOK[playerClass] or {}
+                ProcDocDB.signalOK[playerClass] = seen
+                if not seen[proc.key] then
+                    seen[proc.key] = true
+                    Trace("%s: its stacks can be read from %s's cost in a fight", proc.key, sig.name or "?")
+                end
+            end
+        end
         return nil
     end
+    if not (Signal.Usable(proc) and (b.sure or not sig.verify)) then return nil end
+    if sig.perStack < 0 and cost == 0 then return nil end              -- (a cost that grows: free means something else)
     if not b.sure and (b.cost or 0) < cost then b.cost = cost end      -- (never calibrated: the most seen)
     if (b.ct or 0) < ct then b.ct = ct end
     if not b.cost or b.cost <= 0 then return nil end
-    if cost == 0 then
-        if ct == 0 and b.ct > 0 then return sig.maxStacks, b.sure end
+    -- Each stack takes the same share off the cost and off the cast time; other
+    -- things take it off only one (Eureka!, Clearcasting, Convection the cost;
+    -- haste the cast time). From the cost alone a spent Maelstrom Weapon still
+    -- read 1 under Eureka!, and a Clearcasting that made the bolt free kept the
+    -- old count: the alert stayed up. So once the two have been seen to agree
+    -- (the cast time follows the stacks: `ctFollows`), the lower count is used.
+    local bct = b.ct or 0                                             -- (none seen yet: only instant casts so far)
+    local byCost = (cost == 0) and sig.maxStacks or math.floor((1 - cost / b.cost) / sig.perStack + 0.5)
+    local byTime = (bct > 0) and math.floor((1 - ct / bct) / sig.perStack + 0.5) or nil
+    if byTime and byCost >= 1 and byTime == byCost then b.ctFollows = true end
+    local n = byCost
+    if b.ctFollows and byTime then
+        n = math.min(byCost, byTime)
+    elseif cost == 0 and not (ct == 0 and bct > 0) then
         return nil                                                    -- free for another reason
     end
-    local n = math.floor((1 - cost / b.cost) / sig.perStack + 0.5)
     return math.max(0, math.min(sig.maxStacks, n)), b.sure
 end
 
@@ -4771,9 +4919,19 @@ function Signal.Poll()
                     end
                     Trace("%s: %d stack(s), read from %s", proc.key, n, sig.name or "?")
                 end
-                if n > (info.stacks or 0) and dur then info.exp, info.dur = now + dur, dur end
+                -- a stack more starts its countdown over. A `fixedTime` one (Arcane Blast)
+                -- keeps its time from the first stack, unless there are fewer than
+                -- before: that one ended and a new one began
+                if proc.fixedTime then
+                    if dur and (not info.exp or n < (info.stacks or 0)) then info.exp, info.dur = now + dur, dur end
+                elseif n > (info.stacks or 0) and dur then
+                    info.exp, info.dur = now + dur, dur
+                end
                 info.stacks = n
                 SetLive(proc, "signal", info)
+            elseif ok and n == 0 and proc.lastGain and now - proc.lastGain < CDM.STACK_LAG then
+                -- (your cast that gives one went out a moment ago: the spell's cost
+                -- shows it a moment later, so this is the cost from before it)
             elseif ok and n == 0 then
                 -- none left. What the buff check saw before the fight is dropped
                 -- too, but only when the spell's own cost is known for sure
@@ -4856,11 +5014,11 @@ function CDM.Check()
             if proc.isAction then
                 how = (proc.custom or proc.cdm) and "from its cooldown (your own ability)"
                     or "lights up when the game says you can use it"
-            elseif watched[proc.key] and Mirror.Covers(proc) and Mirror.Sides(proc) then
+            elseif watched[proc.key] and Mirror.Covers(proc) and Mirror.OnlyGameKnows(proc) then
                 how = "drawn by the game itself (it knows your stacks), with its sound from its Cooldown Manager icon"
             elseif watched[proc.key] then
                 how = "seen (its Cooldown Manager icon)"
-            elseif proc.castSignal then
+            elseif proc.castSignal and Signal.Usable(proc) then
                 how = "seen (read from " .. (GetSpellNameCompat(proc.castSignal.spell) or "its spell") .. ")"
             elseif Mirror.Covers(proc) then
                 how = "drawn by the game itself (nothing to set up" ..
@@ -4970,13 +5128,18 @@ function Mirror.Wants(proc)
         and IsProcEnabled(proc) and not Remind.Is(proc) and not PS(proc.key).oocOnly) and true or false
 end
 
--- A pair that shows one side per stack (Fingers of Frost) is drawn by the game
--- in every fight, even with a Cooldown Manager icon watching it. In combat the
--- game hides the stack count: ProcDoc sees your cast spend a charge, but
--- nothing tells it when a new proc fills them up again, so its own alert
--- stayed on one side. The game's copy follows the real stacks (the second
--- side shows from 2), and the icon still gives the sound when it lights up.
-function Mirror.Sides(proc)
+-- Procs whose stacks only the game knows mid-fight are drawn by it in every
+-- fight, even with a Cooldown Manager icon watching them. In combat the game
+-- hides the stack count (the icon's own count reads 1 at one stack and nothing
+-- from two), and the game's copy follows the real stacks; the icon still gives
+-- the sound when it lights up.
+--   * A pair that shows one side per stack (Fingers of Frost): ProcDoc sees
+--     your cast spend a charge, but nothing tells it when a new proc fills
+--     them up again, so its own alert stayed on one side.
+--   * `gameStacks` with its stack dots on (Heating Up): its stacks come from
+--     crits, which ProcDoc can't see in a fight, so its dots were wrong.
+function Mirror.OnlyGameKnows(proc)
+    if proc.gameStacks and Pips.Enabled(proc) then return true end
     local _, _, both = ProcPlacement(proc)
     return (both and Pips.SidesByStacks(proc)) and true or false
 end
@@ -5333,9 +5496,9 @@ function Mirror.Combat(inCombat)
     if not Mirror.box then return end
     for key, set in pairs(Mirror.sets) do
         -- (one with a Cooldown Manager icon is ProcDoc's own in combat, sound and all,
-        -- unless only the game can tell its stacks: Mirror.Sides)
+        -- unless only the game can tell its stacks: Mirror.OnlyGameKnows)
         local on = (inCombat and set.ready and Mirror.Wants(set.proc)
-            and (Mirror.Sides(set.proc) or not (Predict.IsWatched and Predict.IsWatched(set.proc)))) and true or false
+            and (Mirror.OnlyGameKnows(set.proc) or not (Predict.IsWatched and Predict.IsWatched(set.proc)))) and true or false
         local took = Mirror.Switch(set, on)
         local was = set.on
         set.on = on and took
@@ -6985,7 +7148,7 @@ function ProcUI.Alert(page, st, child)
             if not pageProc then return end
             PSW(pageProc.key).anyStance = v or nil
             ReevaluateAll()
-        end, "Also lights up in your other stances when your target dodges, so you can switch to Battle Stance and use it. The game doesn't say whose attack was dodged, so in a group it can also light up for someone else's."), 16, nil, 10)
+        end, "Also lights up in your other stances when your target dodges or Bloodthrill readies it, so you can switch to Battle Stance and use it. The game doesn't say whose attack was dodged, so in a group a dodge can also light it up for someone else's."), 16, nil, 10)
 
     -- the rest of the page sits under whichever switches are shown
     local tail = CreateFrame("Frame", nil, rest)
@@ -7670,7 +7833,7 @@ local function BuildImagePicker(parent)
     end
     page:SetContentHeight(-y + STEP + 8)
 
-    local hint = FS(p, "GameFontHighlightSmall", "Custom image: a file in ProcDoc\\img\\ (e.g. MyProc.tga), a texture path, or a file ID")
+    local hint = FS(p, "GameFontHighlightSmall", "Custom image: a full path, outside ProcDoc (updates replace it), or a file ID")
     hint:SetPoint("BOTTOMLEFT", PAD, 46)
     hint:SetWidth(COL)
     hint:SetJustifyH("LEFT")
