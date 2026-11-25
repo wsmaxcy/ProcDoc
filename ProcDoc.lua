@@ -32,6 +32,7 @@ local DEFAULTS = {
     timerDecimals       = true,
     disableTimers       = false,
     fadeTimers          = false,   -- a line sweeps over the art as a proc's time runs out, dimming what it passes (instead of or as well as the number)
+    fadeSweep           = "down",  -- that line: "down" (from the top, or side to side) or "middle" (from both ends, meeting in the middle as it runs out)
     isMuted             = false,
     defaultSound        = "alert1",
     soundChannel        = "Master",
@@ -1203,12 +1204,14 @@ function Pips.SidesByStacks(proc)
     return v and not proc.isAction and true or false
 end
 
--- Dot size: per-proc if set, else scales with the alert like the countdown
+-- Dot size: per-proc if set (the Stacks page's "Dot size", or Shift + wheel over
+-- them), else it grows and shrinks with the alert, as far as the alert does
+-- (it stopped at 1.6 x: a player's big alert had small dots)
 function Pips.Size(proc, scale)
     local s = PS(proc.key)
     if s.pipSize then return s.pipSize end
     local f = (scale or 1) * PixelFactor() / REF_PIXEL_FACTOR
-    return math.floor(11 * math.min(math.max(f, 0.6), 1.6) + 0.5)
+    return math.floor(11 * math.min(math.max(f, 0.6), 4) + 0.5)
 end
 
 -- Lays out `slots` dots with `filled` lit; the newest dot pops for 0.3s.
@@ -1370,7 +1373,7 @@ function Pips.OnWheel(pf, delta)
     local p = pf:GetParent()
     local proc = p.alert.proc
     local size = Pips.Size(proc, (PS(proc.key).scale or LAYOUT.scale) * (G.masterScale or 1))
-    PSW(proc.key).pipSize = math.min(40, math.max(4, size + delta))
+    PSW(proc.key).pipSize = math.min(60, math.max(4, size + delta))
     LayoutAlert(p.alert)
     Pips.Tip(pf)
     if RefreshOptions then RefreshOptions() end
@@ -1398,6 +1401,8 @@ local function CreatePiece(a, index)
     -- its line: `tex` has the part the line hasn't reached, `dim` the part it has
     p.dim = p:CreateTexture(nil, "ARTWORK")
     p.dim:Hide()
+    p.dim2 = p:CreateTexture(nil, "ARTWORK")      -- (the other end's part, when the line closes to the middle)
+    p.dim2:Hide()
 
     -- Additive copy of the art used for the pop-in flash
     p.flash = p:CreateTexture(nil, "OVERLAY")
@@ -1590,6 +1595,7 @@ LayoutAlert = function(a)
         Pips.Unsplit(p)                           -- (a fade in progress starts over from the whole picture)
         p.tex:SetTexture(img)
         p.dim:SetTexture(img)
+        p.dim2:SetTexture(img)
         p.uv = { ApplyTexCoord(p.tex, flip, isIcon, rot) }    -- (the corners the fade cuts the picture from)
         p.flash:SetTexture(img)
         ApplyTexCoord(p.flash, flip, isIcon, rot)
@@ -1711,6 +1717,7 @@ end
 
 local function ProcDoc_PlayAlertSound(proc)
     if G.isMuted then return end
+    if Mirror.OwnsSound and Mirror.OwnsSound(proc) then return end   -- (the game plays this one: Mirror.SyncSounds)
     local now = GetTime()
     if now - lastSoundTime < 0.25 then return end
     local key = PS(proc.key).sound or G.defaultSound
@@ -1821,6 +1828,7 @@ function Pips.Unsplit(p)
     if not p.split then return end
     p.split = nil
     p.dim:Hide()
+    p.dim2:Hide()
     p.tex:ClearAllPoints()
     p.tex:SetPoint("CENTER")
     local uv = p.uv
@@ -1840,6 +1848,39 @@ function Pips.DrawArt(p, W, H, alpha, f)
     local dim, tex, uv = p.dim, p.tex, p.uv
     dim:ClearAllPoints()
     tex:ClearAllPoints()
+    if G.fadeSweep == "middle" then
+        -- from both ends to the middle: half the way from each, so the two lines
+        -- meet in the middle as the time runs out (`dim` one end, `dim2` the other)
+        local dim2, g = p.dim2, f / 2
+        dim2:ClearAllPoints()
+        tex:SetPoint("CENTER", p, "CENTER", 0, 0)
+        if p.baseW > p.baseH then                -- wide: from the left and the right
+            dim:SetPoint("LEFT", p, "CENTER", -W / 2, 0)
+            dim2:SetPoint("RIGHT", p, "CENTER", W / 2, 0)
+            dim:SetSize(W * g, H)
+            dim2:SetSize(W * g, H)
+            tex:SetSize(W * (1 - f), H)
+            Pips.CutPart(dim, uv, 0, 0, g, 1)
+            Pips.CutPart(dim2, uv, 1 - g, 0, 1, 1)
+            Pips.CutPart(tex, uv, g, 0, 1 - g, 1)
+        else                                     -- tall: from the top and the bottom
+            dim:SetPoint("TOP", p, "CENTER", 0, H / 2)
+            dim2:SetPoint("BOTTOM", p, "CENTER", 0, -H / 2)
+            dim:SetSize(W, H * g)
+            dim2:SetSize(W, H * g)
+            tex:SetSize(W, H * (1 - f))
+            Pips.CutPart(dim, uv, 0, 0, 1, g)
+            Pips.CutPart(dim2, uv, 0, 1 - g, 1, 1)
+            Pips.CutPart(tex, uv, 0, g, 1, 1 - g)
+        end
+        dim:SetAlpha(alpha * Pips.FADE_TO)
+        dim2:SetAlpha(alpha * Pips.FADE_TO)
+        tex:SetAlpha(alpha)
+        dim:Show()
+        dim2:Show()
+        return
+    end
+    p.dim2:Hide()
     if p.baseW > p.baseH then                    -- wide: the line goes from left to right
         dim:SetPoint("LEFT", p, "CENTER", -W / 2, 0)
         tex:SetPoint("RIGHT", p, "CENTER", W / 2, 0)
@@ -2056,6 +2097,7 @@ local function OnUpdateHandler(self, elapsed)
                     for i = 1, a.numPieces do
                         a.pieces[i].tex:SetTexture(want)
                         a.pieces[i].dim:SetTexture(want)
+                        a.pieces[i].dim2:SetTexture(want)
                         a.pieces[i].flash:SetTexture(want)
                     end
                     a.curImage = want
@@ -3717,6 +3759,9 @@ local CDM = {
     mouseOff = setmetatable({}, { __mode = "k" }),  -- icons whose tooltips we switched off
     GONE_DELAY = 0.5,
     STACK_LAG = 1,                           -- how long after your cast its icon can still show the old count
+    hooked   = setmetatable({}, { __mode = "k" }),  -- icon timers listened to (CDM.HookTimers)
+    timerSet = {},                           -- procKey -> when its icon last started its timer over
+    auraTimes = {},                          -- times (frames) a change to your buffs came in (UNIT_AURA)
     SURE     = { IsActive = true, isActive = true, ["aura gone"] = true },  -- trusted "not active" answers
     elapsed  = 0,
     wiped    = 0,
@@ -4042,8 +4087,43 @@ function CDM.Hidden()
     return auraLocked or Remind.InCombat()
 end
 
+-- A buff refreshed mid-fight (Nightfall procs again while it's up) keeps its
+-- icon lit, so nothing ProcDoc can read changes, and its countdown and fade ran
+-- on from the first proc. But Blizzard's icon starts its own timer over then
+-- (its Cooldown's SetCooldown, with numbers no addon can read): ProcDoc listens
+-- for that call (hooksecurefunc: it changes nothing), and a restart in the same
+-- frame as a change to your buffs starts the proc's countdown and fade over
+-- (CDM.Poll). Other redraws (the row showing, a layout) come without one. Only
+-- for procs that don't stack: there a change can be a charge spent.
+function CDM.HookTimers()
+    if type(hooksecurefunc) ~= "function" then return end
+    for _, f in ipairs(CDM.Items()) do
+        local cd = f.Cooldown
+        if type(cd) == "table" and not CDM.hooked[cd] then
+            CDM.hooked[cd] = true
+            for _, m in ipairs({ "SetCooldown", "SetCooldownFromDurationObject" }) do
+                if type(cd[m]) == "function" then pcall(hooksecurefunc, cd, m, function() CDM.TimerSet(f) end) end
+            end
+        end
+    end
+end
+function CDM.TimerSet(f)
+    local ok, proc = pcall(function() return CDM.ProcFor(CDM.CooldownID(f), f) end)
+    if ok and proc then CDM.timerSet[proc.key] = GetTime() end
+end
+function CDM.Refreshes(proc)
+    return not (proc.charges or proc.dotSlots or proc.stackImages or proc.gainedBy or (proc.maxSeen or 0) > 1)
+end
+
 function CDM.Poll()
     local now = GetTime()
+    if now - (CDM.hookAt or 0) >= 1 then
+        CDM.hookAt = now
+        CDM.HookTimers()
+        for t in pairs(CDM.auraTimes) do
+            if now - t > 2 then CDM.auraTimes[t] = nil end
+        end
+    end
     CDM.ApplyHide()
     local hidden = CDM.Hidden()
     if G.trace and hidden then CDM.WatchActions() end
@@ -4122,6 +4202,17 @@ function CDM.Poll()
         -- just after ProcDoc counted a stack from that cast is the old one. (Arcane
         -- Blast showed a stack short: Blizzard writes a blank count at 1 stack,
         -- which can be read in a fight, and hides the count from 2.)
+        -- refreshed mid-fight: its countdown and fade start over (CDM.HookTimers)
+        local set = CDM.timerSet[key]
+        if set and set ~= info.restartAt and CDM.auraTimes[set] and CDM.Refreshes(proc) then
+            info.restartAt = set
+            local dur = proc.lastDuration or proc.predictDuration or info.dur
+            if dur then
+                info.exp, info.dur = set + dur, dur
+                SetLive(proc, "cdm", info)
+                Trace("%s refreshed (its icon's timer started over): its countdown from %.0f sec", key, dur)
+            end
+        end
         local n = stacks[key]
         if n and info.gainAt and now - info.gainAt < CDM.STACK_LAG and n < (info.charges or 0) then n = nil end
         local was = info.stacks
@@ -5020,6 +5111,8 @@ function CDM.Check()
                 how = "seen (its Cooldown Manager icon)"
             elseif proc.castSignal and Signal.Usable(proc) then
                 how = "seen (read from " .. (GetSpellNameCompat(proc.castSignal.spell) or "its spell") .. ")"
+            elseif Mirror.Covers(proc) and Mirror.OwnsSound(proc) then
+                how = "drawn by the game itself, and its sound played by the game (nothing to set up)"
             elseif Mirror.Covers(proc) then
                 how = "drawn by the game itself (nothing to set up" ..
                     (offered[proc.key] and "; its sound mid-fight too after your next /reload)" or ")")
@@ -5033,6 +5126,10 @@ function CDM.Check()
                 how = "not learned on this character (it shows mid-fight once you have it)"
             elseif proc.predictOn then
                 how = "lit by your killing blow (the Cooldown Manager doesn't list it)"
+            elseif Mirror.OwnsSound(proc) then
+                how = "|cffff5555only out of combat|r on screen (the Cooldown Manager doesn't list it), "
+                    .. "but the game plays its sound in a fight too"
+                bad = bad + 1
             else
                 how = "|cffff5555only out of combat|r (the Cooldown Manager doesn't list it)"
                 bad = bad + 1
@@ -5071,11 +5168,11 @@ end
 --     change made mid-fight waits for its end (Mirror.Tick). Only switching a
 --     slot on or off is done at any time (a call on the container).
 --   * a slot can't be removed again: one that's no longer needed stays off
---   * nothing of ProcDoc's runs when the game shows the copy, so no sound,
---     and no pop-in or pulse either: 4.19.0 handed the game those as
---     animations (AddAuraShownAnimation), and in real fights the game
---     mishandled them (the picture went big then small, or went missing
---     while its countdown showed; a plain copy, tested in game, is right).
+--   * nothing of ProcDoc's runs when the game shows the copy. Its sound, when
+--     no Cooldown Manager icon watches it, is one the game plays itself
+--     (Mirror.SyncSounds); its pulse is a looping animation the game plays
+--     while it shows (Mirror.Animate). No pop-in: in real fights the picture
+--     went missing once a one-off animation had played.
 --     The countdown is written by the game (SetDurationText) with
 --     ProcDoc's font, place and colours
 --   * stacks: a button can carry one bar the game shows from n stacks up
@@ -5263,9 +5360,9 @@ function Mirror.Layer(set, id, from, most)
 end
 
 -- An image of the copy: its place and size on a frame of ProcDoc's own, the
--- art inside it. Plain: no animations (see the notes above). The frames
--- inside are the ones 4.19.0 animated, kept as they are: this is exactly the
--- copy that was tested in real fights.
+-- art inside it. The frames inside are the ones 4.19.0 animated, kept as they
+-- are; `beat` carries the pulse (Mirror.Animate), `pop` and `glow` (4.19.0's
+-- pop-in and flash) are left still.
 function Mirror.Tex(layer, e)
     layer.nTex = layer.nTex + 1
     local it = layer.tex[layer.nTex]
@@ -5293,7 +5390,66 @@ function Mirror.Tex(layer, e)
     it.art:SetAlpha(e.a)
     it.flash:SetTexture(e.img)
     ApplyTexCoord(it.flash, e.flip, e.icon, e.rot)
+    it.flash:SetAlpha(e.a)                                      -- (the proc's own opacity, as on ProcDoc's flash)
+    Mirror.Animate(layer, it)
     it:Show()
+end
+
+-- A copy's pulse (a player asked for the same as ProcDoc's own): opacity and
+-- size between the faintest and brightest set, at the pulse speed set, as
+-- OnUpdate does, as a looping animation the game plays while the copy shows
+-- (AddAuraShownAnimation). It's on the picture's `beat` frame, never on the
+-- picture (the game locks what it animates: its opacity, colour and texture
+-- coordinates). No pop-in: in real fights (4.19.0, and again 2026-11-24 with
+-- its sizes right) the picture went missing once a one-off animation had
+-- played (its flash showed, then the copy was gone until the fight ended).
+-- A setting changed makes a new one (Mirror.Build's signature has these); the
+-- old one is taken back.
+function Mirror.AnimSig()
+    local minA = G.minAlpha or 0.8
+    local maxA = math.max(G.maxAlpha or 1, minA)
+    local minS = G.minScale or 0.9
+    local maxS = math.max(G.maxScale or 1, minS)
+    if maxA - minA <= 0.01 and maxS - minS <= 0.005 then return "" end
+    local half = math.pi / math.max(0.2, (G.pulseSpeed or 0.4) * PULSE_RATE)
+    return string.format("%.2f:%.2f:%.3f:%.3f:%.3f", minA, maxA, minS, maxS, half)
+end
+function Mirror.Step(group, kind, from, to, duration)
+    local a = group:CreateAnimation(kind)
+    if kind == "Alpha" then
+        a:SetFromAlpha(from)
+        a:SetToAlpha(to)
+    else
+        local setFrom, setTo = a.SetScaleFrom or a.SetFromScale, a.SetScaleTo or a.SetToScale
+        setFrom(a, from, from)
+        setTo(a, to, to)
+    end
+    a:SetDuration(duration)
+    a:SetSmoothing("IN_OUT")
+    return a
+end
+function Mirror.Animate(layer, it)
+    local b = layer.button
+    if type(b.AddAuraShownAnimation) ~= "function" then return end
+    local sig = Mirror.AnimSig()
+    if it.animSig == sig then return end
+    if it.beatAnim and type(b.RemoveAuraShownAnimation) == "function" then
+        pcall(b.RemoveAuraShownAnimation, b, it.beatAnim)
+    end
+    it.beatAnim, it.animSig = nil, sig
+    if sig == "" then return end
+    local minA = G.minAlpha or 0.8
+    local maxA = math.max(G.maxAlpha or 1, minA)
+    local minS = G.minScale or 0.9
+    local maxS = math.max(G.maxScale or 1, minS)
+    local half = math.pi / math.max(0.2, (G.pulseSpeed or 0.4) * PULSE_RATE)
+    local g = it.beat:CreateAnimationGroup()
+    local built = pcall(function()
+        g:SetLooping("BOUNCE")
+        Mirror.Step(g, "Alpha", minA, maxA, half)
+        Mirror.Step(g, "Scale", minS, maxS, half)
+    end)
+    if built and pcall(b.AddAuraShownAnimation, b, g) then it.beatAnim = g end
 end
 
 function Mirror.Dot(layer, e)
@@ -5419,7 +5575,7 @@ function Mirror.Build(set, ids, idSig)
     local box = Mirror.Box()
     if not box then return end
     local els, sig = Mirror.Spec(set.proc)
-    sig = idSig .. "#" .. sig
+    sig = idSig .. "#" .. sig .. "#" .. Mirror.AnimSig()
     if set.sig == sig and set.ready then return end
     if set.idSig ~= idSig then
         for _, layer in pairs(set.layers) do
@@ -5521,6 +5677,10 @@ function Mirror.Tick()
     if now - (Mirror.last or 0) < 0.3 then return end
     Mirror.last = now
     if Mirror.dirty or next(Mirror.touch) then Mirror.Sync() end
+    if Mirror.soundsPending or now - (Mirror.soundsAt or 0) >= 2 then
+        Mirror.soundsAt = now
+        Mirror.SyncSounds()
+    end
     if Mirror.box then
         for _, set in pairs(Mirror.sets) do
             for _, layer in pairs(set.layers) do
@@ -5530,6 +5690,72 @@ function Mirror.Tick()
                 end
             end
             set.on = false
+        end
+    end
+end
+
+-- Sounds the game plays itself (C_UnitAuras.AddAuraSound, in Forever's API). A
+-- buff proc no Cooldown Manager icon watches had no sound in a fight: ProcDoc
+-- can't see it there. The game can play a sound when a buff lands on you, fights
+-- included, so ProcDoc gives it the proc's sound for those, and plays none of its
+-- own for them (out of combat the game plays it too: one sound, not two). The
+-- game never tells ProcDoc it played one (that would give away the buff), so this
+-- is the sound only. Registered out of combat (the game refuses it in a fight),
+-- kept in step every 2 sec and right after a fight. Left to ProcDoc: a sound that
+-- waits for its stacks, "Show the alert at", "Only in/out of combat", a sound kit
+-- rather than a file, and procs ProcDoc follows itself mid-fight.
+Mirror.sounds = {}                        -- procKey -> { sig = what was registered, ids = the game's ids for it }
+function Mirror.OwnsSound(proc)
+    return Mirror.sounds[proc.key] ~= nil
+end
+-- The sound file and buff numbers the game should play for this proc, or nil
+function Mirror.SoundFor(proc)
+    if G.isMuted or proc.isAction or Remind.Is(proc) or not IsProcEnabled(proc) then return nil end
+    if proc.castSignal or proc.predictOn or (proc.fixedTime and proc.gainedBy) then return nil end   -- (its own in a fight)
+    local s = PS(proc.key)
+    if s.combatOnly or s.oocOnly or (s.minStacks or proc.minStacks or 1) > 1 or Pips.SoundAt(proc) then return nil end
+    if Predict.IsWatched and Predict.IsWatched(proc) then return nil end          -- (its icon tells ProcDoc: its own sound)
+    local def = SOUND_BY_KEY[s.sound or G.defaultSound]
+    if not (def and def.file) then return nil end                                  -- (the game plays files, not sound kits)
+    local ids = Mirror.Ids(proc)
+    local list = {}
+    for id in pairs(ids) do list[#list + 1] = id end
+    if #list == 0 then return nil end
+    table.sort(list)
+    return def.file, list
+end
+function Mirror.SyncSounds()
+    local api, trig = C_UnitAuras, Enum and Enum.UnitAuraSoundTrigger
+    if not (api and api.AddAuraSound and api.RemoveAuraSound and trig and trig.Added) then return end
+    if Remind.InCombat() or (InCombatLockdown and InCombatLockdown()) then Mirror.soundsPending = true; return end
+    Mirror.soundsPending = nil
+    local channel, want = G.soundChannel or "Master", {}
+    for _, proc in ipairs(buffProcs) do
+        local file, list = Mirror.SoundFor(proc)
+        if file then want[proc.key] = { file = file, list = list, sig = file .. "|" .. channel .. "|" .. table.concat(list, ",") } end
+    end
+    for key, reg in pairs(Mirror.sounds) do
+        if not (want[key] and want[key].sig == reg.sig) then
+            for _, id in ipairs(reg.ids) do pcall(api.RemoveAuraSound, id) end
+            Mirror.sounds[key] = nil
+            Trace("%s: its sound is ProcDoc's own again", key)
+        end
+    end
+    for key, w in pairs(want) do
+        if not Mirror.sounds[key] then
+            local reg = { sig = w.sig, ids = {} }
+            for _, spellID in ipairs(w.list) do
+                local ok, id = pcall(api.AddAuraSound, trig.Added,
+                    { unitToken = "player", spellID = spellID, soundFileName = w.file, outputChannel = channel })
+                if ok and Readable(id) and id then reg.ids[#reg.ids + 1] = id end
+            end
+            if #reg.ids > 0 then
+                Mirror.sounds[key] = reg
+                Trace("%s: its sound is played by the game (%d buff number(s))", key, #reg.ids)
+            elseif not Mirror.soundRefused then
+                Mirror.soundRefused = true
+                Trace("%s: the game wouldn't take its sound", key)
+            end
         end
     end
 end
@@ -5626,6 +5852,7 @@ local auraFrame = CreateFrame("Frame", "ProcDocAuraFrame", UIParent)
 SafeRegister(auraFrame, "UNIT_AURA", "player")
 auraFrame:SetScript("OnEvent", GuardedHandler(function(self, event, unit, updateInfo)
     if not initialized or not Readable(unit) or unit ~= "player" then return end
+    CDM.auraTimes[GetTime()] = true                        -- (a change to your buffs this frame: CDM.HookTimers)
     updateInfo = Clean(updateInfo)
     if type(updateInfo) == "table" then
         local full = Clean(updateInfo.isFullUpdate)
@@ -7348,6 +7575,16 @@ function ProcUI.Stacks(page, st, child)
             if v then PSW(pageProc.key).stackDots = nil else PSW(pageProc.key).stackDots = false end
             ProcUI.Changed()
         end), 16, nil, 10)
+    -- (their own size, apart from the picture's: a player asked; at the left end they follow the alert)
+    st:Add(CreateSlider(child, "Dot size", 3, 60, 1,
+        function(v) v = math.floor(v + 0.5); return v <= 3 and "with the alert" or (v .. " px") end,
+        function() return pageProc and PS(pageProc.key).pipSize or 3 end,
+        function(v)
+            if not pageProc then return end
+            v = math.floor(v + 0.5)
+            PSW(pageProc.key).pipSize = (v > 3) and v or nil
+            ProcUI.Changed()
+        end, COL), 38)
     st:Add(CreateSlider(child, "Show the alert at (stacks)", 1, 20, 1,
         function(v) v = math.floor(v + 0.5); return v <= 1 and "any" or tostring(v) end,
         function() return pageProc and (PS(pageProc.key).minStacks or pageProc.minStacks) or 1 end,
@@ -7608,6 +7845,10 @@ local function BuildGeneralPage(parent)
         "A line sweeps over the alert as its time runs out, from the top down (side to side for a wide one), and what it has passed fades to half: a way to see the time without a number. " ..
         "Turn the countdown timers off above for the line alone, or keep both. Individual procs can override this. " ..
         "An alert the game draws itself in a fight (one ProcDoc can't read) can't do this: the game doesn't let ProcDoc change it."), 16, nil, 10)
+    GDropdown("The fade's line", "fadeSweep", {
+        { value = "down",   label = "From the top down" },
+        { value = "middle", label = "From top and bottom to the middle" },
+    })
     GDropdown("Font", "timerFont", FONT_CHOICES)
     GDropdown("Outline", "timerOutline", OUTLINE_CHOICES)
     GSlider("Text size (per proc: Shift + wheel over the number)", "timerTextSize", 8, 60, 1, px,
