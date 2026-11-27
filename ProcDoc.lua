@@ -2284,7 +2284,18 @@ local function RegisterProc(proc, isAction)
         local seen = ProcDocDB.stackMax and ProcDocDB.stackMax[playerClass]
         proc.maxSeen = seen and seen[proc.key] or proc.maxSeen
         local durs = ProcDocDB.durations and ProcDocDB.durations[playerClass]
-        proc.lastDuration = proc.lastDuration or (durs and durs[proc.key]) or proc.baseDuration
+        if proc.fixedTime and proc.baseDuration then
+            -- A `fixedTime` buff (Arcane Blast) always lasts its base duration
+            -- from the first application. The game reports the time *left* in
+            -- the aura's `duration` field as stacks are added, so never keep
+            -- that shrinking value as its full length.
+            proc.lastDuration = proc.baseDuration
+            if durs and durs[proc.key] ~= proc.baseDuration then
+                durs[proc.key] = proc.baseDuration
+            end
+        else
+            proc.lastDuration = proc.lastDuration or (durs and durs[proc.key]) or proc.baseDuration
+        end
         for id in pairs(proc.learnedIDs or {}) do
             if not buffBySpellID[id] then buffBySpellID[id] = proc end
             local n = not proc.auto and GetSpellNameCompat(id)
@@ -2579,13 +2590,17 @@ local function MakeAuraInfo(proc, count, duration, expirationTime, instanceID, n
         end
     end
     if Readable(duration) and Readable(expirationTime) and duration > 0 and expirationTime > now then
-        info.exp, info.dur = expirationTime, duration
+        -- A `fixedTime` buff (Arcane Blast) ends a set time after its first
+        -- application: the game reports the time *left* in `duration` as
+        -- stacks are added, so keep the full base length for the countdown.
+        local dur = (proc.fixedTime and proc.baseDuration) or duration
+        info.exp, info.dur = expirationTime, dur
         -- kept for good: in combat the game hides it, and the countdown of a
         -- proc seen only through the Cooldown Manager starts from this
-        proc.lastDuration = duration
+        proc.lastDuration = dur
         local byClass = ProcDocDB.durations[playerClass] or {}
         ProcDocDB.durations[playerClass] = byClass
-        byClass[proc.key] = duration
+        byClass[proc.key] = dur
     end
     if Readable(instanceID) then
         info.inst = instanceID
