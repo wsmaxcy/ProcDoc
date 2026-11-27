@@ -2285,6 +2285,9 @@ local function RegisterProc(proc, isAction)
         proc.maxSeen = seen and seen[proc.key] or proc.maxSeen
         local durs = ProcDocDB.durations and ProcDocDB.durations[playerClass]
         proc.lastDuration = proc.lastDuration or (durs and durs[proc.key]) or proc.baseDuration
+        if proc.fixedTime and proc.baseDuration and proc.lastDuration < proc.baseDuration then
+            proc.lastDuration = proc.baseDuration
+        end
         for id in pairs(proc.learnedIDs or {}) do
             if not buffBySpellID[id] then buffBySpellID[id] = proc end
             local n = not proc.auto and GetSpellNameCompat(id)
@@ -2579,6 +2582,9 @@ local function MakeAuraInfo(proc, count, duration, expirationTime, instanceID, n
         end
     end
     if Readable(duration) and Readable(expirationTime) and duration > 0 and expirationTime > now then
+        if proc.fixedTime and proc.baseDuration and duration < proc.baseDuration then
+            duration = proc.baseDuration
+        end
         info.exp, info.dur = expirationTime, duration
         -- kept for good: in combat the game hides it, and the countdown of a
         -- proc seen only through the Cooldown Manager starts from this
